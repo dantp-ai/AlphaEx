@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alphaex"
+version = "0.1.0"
+description = "AlphaEx: A Python Toolkit for Managing Large Number of Experiments"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "Yi Wan", email = "wan6@ualberta.ca"}]
+requires-python = ">=3.9"
+dependencies = ["numpy>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/AmiiThinks/AlphaEx"
+
+[tool.setuptools.packages.find]
+exclude = ["test*"]

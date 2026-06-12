@@ -21,14 +21,20 @@ To test these 2 modules, run
 with you own setting. Please refer to later sections.)
 
 ## Dependencies
-1. python 3.7
-2. numpy
+1. python >= 3.9 (3.12 recommended)
+2. numpy >= 2.0
 
 ## Installation
 ```bash
 git clone https://github.com/AmiiThinks/AlphaEx.git
 cd AlphaEx
 pip install -e .
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+```bash
+uv venv --python 3.12
+uv pip install -e .
 ```
 
 ## Submitter
@@ -155,7 +161,7 @@ In this way, your array-job submission script can be common to many experiments 
 
 export OMP_NUM_THREADS=1
 
-module load python/3.7
+module load python/3.12
 
 echo "${python_module}" "${SLURM_ARRAY_TASK_ID}" "${config_file}"
 python -m "${python_module}" "${SLURM_ARRAY_TASK_ID}" "${config_file}"

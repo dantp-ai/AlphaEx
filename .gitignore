@@ -3,3 +3,5 @@ test/log
 test/plot
 /.idea/
 .python-version
+**__pycache__/
+
