@@ -9,6 +9,10 @@ With AlphaEx, you can:
 The above 2 functions are implemented in 2 self-contained python scripts
 `submitter.py`, `sweeper.py`.
 
+## Architecture
+
+<p align="center"><img src="./docs/architecture.png" alt="AlphaEx architecture: Sweeper + Submitter dispatching to real HPC clusters or the local mini-slurm Docker sandbox" width="640"></p>
+
 **Warning**:
 
 Sweeper can be used in any machine with python 3 installed. But submitter is only compatible with **slurm**.
