@@ -14,6 +14,9 @@ The above 2 functions are implemented in 2 self-contained python scripts
 Sweeper can be used in any machine with python 3 installed. But submitter is only compatible with **slurm**.
 Make sure you have access to at least one cluster with slurm installed. For example, I
 have an account on compute canada, so I can use clusters including cedar, mp2, etc.
+If you want to try the submitter without an HPC account, see
+[Running Submitter Locally (Mini-Slurm)](#running-submitter-locally-mini-slurm)
+for a Docker-based two-cluster sandbox.
 
 To test these 2 modules, run
 `python test/test_submitter.py`, `python test/test_sweeper.py`
@@ -188,6 +191,35 @@ Since the server needs to keep running a program to monitor job status and submi
 It may not be a good idea to use your own laptop as the server because the laptop may lose internet connection.
 Our suggestion is to use one cluster as the server and use a program like screen to make
 sure that the monitor program runs in the background even if you logout from the server.
+
+### Running Submitter Locally (Mini-Slurm)
+
+For development or evaluation without an HPC account, `docker/` ships a
+two-container Slurm sandbox that the submitter can drive end-to-end over SSH,
+just like a real cluster.
+
+Prerequisites: Docker Desktop (or any Docker engine) with `docker compose`
+available.
+
+```bash
+bash docker/setup.sh                                # build + start, wires ~/.ssh/config
+ALPHAEX_LOCAL_SLURM=1 uv run pytest test/test_submitter_local.py -v
+ls test/output/                                     # submit_1.txt ... submit_4.txt
+bash docker/teardown.sh                             # stop containers + clean ~/.ssh/config
+```
+
+`setup.sh` generates a dedicated ed25519 keypair under `docker/keys/`,
+appends `Host cluster-a` and `Host cluster-b` blocks to your `~/.ssh/config`
+(inside a guarded `# >>> alphaex-slurm` marker so teardown can remove them),
+publishes container SSH on ports 2221 and 2222, and waits for both clusters
+to accept logins. The repo is bind-mounted into each container at
+`/home/alphaex/AlphaEx`, so job output written to `test/output/` from inside
+the cluster lands directly on the host.
+
+This sandbox is meant for development of the submitter itself. It runs one
+node per cluster on a single host, uses a fake `alphaex` account, and has
+no scheduler accounting — it is not a substitute for a real cluster for
+running real experiments.
 
 ## Sweeper
 Using sweeper, you can sweep all the experiment variables using one click. These

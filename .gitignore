@@ -8,4 +8,7 @@ test/plot
 .coverage
 .pytest_cache/
 .ruff_cache/
+docker/keys/
+test/output/
+test/error/
 
