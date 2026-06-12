@@ -15,5 +15,24 @@ dependencies = ["numpy>=2.0"]
 [project.urls]
 Homepage = "https://github.com/AmiiThinks/AlphaEx"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "pre-commit>=3.5",
+]
+
 [tool.setuptools.packages.find]
 exclude = ["test*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C90", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
