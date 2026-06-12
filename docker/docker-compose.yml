@@ -1,0 +1,27 @@
+services:
+  cluster-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurm
+    image: alphaex-slurm
+    hostname: cluster
+    ports:
+      - "2221:22"
+    volumes:
+      - ../:/home/alphaex/AlphaEx:rw
+      - ./keys/authorized_keys:/etc/alphaex_authorized_keys:ro
+    privileged: true
+    cgroup: host
+
+  cluster-b:
+    image: alphaex-slurm
+    hostname: cluster
+    ports:
+      - "2222:22"
+    volumes:
+      - ../:/home/alphaex/AlphaEx:rw
+      - ./keys/authorized_keys:/etc/alphaex_authorized_keys:ro
+    privileged: true
+    cgroup: host
+    depends_on:
+      - cluster-a

@@ -45,3 +45,29 @@ jobs:
         run: |
           source .venv/bin/activate
           pytest --cov=alphaex --cov-report=term-missing
+
+  local-slurm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv venv --python 3.12
+      - name: Install dev extras
+        run: uv pip install -e ".[dev]"
+      - name: Bring up mini-slurm
+        run: bash docker/setup.sh
+      - name: Run local-slurm integration test
+        env:
+          ALPHAEX_LOCAL_SLURM: "1"
+        run: |
+          source .venv/bin/activate
+          pytest test/test_submitter_local.py -v
+      - name: Show docker logs on failure
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs
+      - name: Teardown
+        if: always()
+        run: bash docker/teardown.sh
