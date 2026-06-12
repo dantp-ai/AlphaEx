@@ -3,9 +3,133 @@
 # Permission given to modify the code as long as you keep this        #
 # declaration at the top                                              #
 #######################################################################
-import os
+import subprocess
 import time
 from pathlib import Path
+
+_REQUIRED_CLUSTER_KEYS = ("name", "capacity", "account", "project_root_dir")
+
+
+def _normalize_job_list(job_list):
+    """Convert bare ints in ``job_list`` to ``(n, n)`` tuples in place.
+
+    Tuples pass through unchanged. Asserts ``job_list`` is non-empty.
+    Returns the same list, mutated.
+    """
+    assert len(job_list) != 0
+    for i, item in enumerate(job_list):
+        if isinstance(item, int):
+            job_list[i] = (item, item)
+    return job_list
+
+
+def _validate_cluster(cluster):
+    """Validate a cluster config dict and default ``exp_results_*`` to ``[]``.
+
+    Raises ``ValueError`` on a missing required key, a length mismatch
+    between ``exp_results_from`` and ``exp_results_to``, or a partial
+    specification (only one of the two). Returns the same dict, possibly
+    mutated.
+    """
+    for key in _REQUIRED_CLUSTER_KEYS:
+        if key not in cluster:
+            raise ValueError(f"required cluster key {key!r} missing from {cluster!r}")
+
+    has_from = "exp_results_from" in cluster
+    has_to = "exp_results_to" in cluster
+    if has_from and has_to:
+        if len(cluster["exp_results_from"]) != len(cluster["exp_results_to"]):
+            raise ValueError(
+                "exp_results_from and exp_results_to must have the same length"
+            )
+    elif has_from != has_to:
+        raise ValueError(
+            "exp_results_from and exp_results_to must be both specified or both omitted"
+        )
+    else:
+        cluster["exp_results_from"] = []
+        cluster["exp_results_to"] = []
+    return cluster
+
+
+def _build_job_array_string(
+    job_list, starting_idx, starting_num, capacity, current_jobs
+):
+    """Greedily fill one cluster's remaining capacity from ``job_list``.
+
+    ``job_list`` is a normalized list of ``(start, end)`` tuples (inclusive).
+    ``starting_idx`` is the index of the tuple to begin at; ``starting_num``
+    is the first id to submit inside that tuple. ``capacity`` and
+    ``current_jobs`` describe the cluster's max and currently-queued counts.
+
+    Returns ``(array_string, new_starting_idx, new_starting_num,
+    finish_submitting)``. ``array_string`` has no leading comma; it is
+    empty when no jobs can be scheduled. ``finish_submitting`` is ``True``
+    iff every tuple in ``job_list`` has been consumed.
+    """
+    parts = []
+    finish_submitting = False
+    available = capacity - current_jobs
+    idx = starting_idx
+    num = starting_num
+    while idx < len(job_list):
+        end = job_list[idx][1]
+        assert end >= num
+        chunk_size = end - num + 1
+        if chunk_size <= available:
+            parts.append(f"{num}-{end}")
+            available -= chunk_size
+            current_jobs += chunk_size
+            idx += 1
+            if idx == len(job_list):
+                finish_submitting = True
+                break
+            num = job_list[idx][0]
+        else:
+            if available > 0:
+                last_end = num + available - 1
+                parts.append(f"{num}-{last_end}")
+                num += available
+            break
+    return ",".join(parts), idx, num, finish_submitting
+
+
+def _build_sbatch_command(
+    cluster_name,
+    project_root_dir,
+    job_array_string,
+    account,
+    sbatch_params,
+    export_params,
+    script_path,
+):
+    """Build the ``ssh <name> 'cd <dir>; sbatch ...'`` string."""
+    arg_export = ",".join(f"{k}={v}" for k, v in export_params.items())
+    arg_opt_sbatch = " ".join(f"--{k}={v}" for k, v in sbatch_params.items())
+    cmd = (
+        f"ssh {cluster_name} "
+        f"'cd {project_root_dir}; "
+        f"sbatch "
+        f"--array={job_array_string} "
+        f"--account={account} "
+        f"{arg_opt_sbatch} "
+        f"--export={arg_export} "
+        f"{script_path}'"
+    )
+    return " ".join(cmd.split())
+
+
+def _build_squeue_command(cluster_name, username):
+    return f"ssh {cluster_name} squeue -u {username} -r"
+
+
+def _build_scp_command(cluster_name, remote_path, local_path):
+    return f"scp -r {cluster_name}:{remote_path}/* {local_path}/"
+
+
+def _count_active_jobs(squeue_output, script_basename):
+    """Count lines in ``squeue_output`` containing ``script_basename``."""
+    return sum(1 for line in squeue_output.split("\n") if script_basename in line)
 
 
 class Submitter:
@@ -14,7 +138,8 @@ class Submitter:
 
     Args:
         clusters (list): clusters information
-        total_num_jobs (int): total number of jobs to run
+        job_list (list): list of ints / (start, end) tuples describing
+            slurm array indices to submit
         script_path (str): the slurm array job submission script in the experiment
             project
         export_params (dict): containing arguments and their respective values
@@ -64,245 +189,117 @@ class Submitter:
         duration_between_two_polls=60,
         repo_url=None,
     ):
-        # sanity check
         if sbatch_params is None:
             sbatch_params = {}
         if export_params is None:
             export_params = {}
-        required_members = ["name", "capacity", "account", "project_root_dir"]
         for cluster in clusters:
-            for member in required_members:
-                if member not in cluster:
-                    print(f"{member} not defined in clusters")
-                    exit(1)
-            if "exp_results_from" in cluster and "exp_results_to" in cluster:
-                if (
-                    cluster["exp_results_from"].__len__()
-                    != cluster["exp_results_to"].__len__()
-                ):
-                    print(
-                        "the length of list exp_results_from must equal to the length of list "
-                        "exp_results_to"
-                    )
-                    exit(1)
-            elif (
-                "exp_results_from" not in cluster and "exp_results_to" in cluster
-            ) or ("exp_results_from" in cluster and "exp_results_to" not in cluster):
-                print(
-                    "exp_results_from and exp_results_to must be both specified or "
-                    "unspecified"
-                )
-                exit(1)
-            else:
-                cluster["exp_results_from"] = []
-                cluster["exp_results_to"] = []
+            _validate_cluster(cluster)
 
-        # code synchronize
         if repo_url is not None:
             for cluster in clusters:
-                root_path = "/".join(cluster["project_root_dir"].split("/")[:-1])
-                project_name = cluster["project_root_dir"].split("/")[-1]
-                bash_script = (
-                    "ssh {} 'if [ -d {} ]; then cd {}; git pull origin master; "
-                    "else cd {}; git clone {} {}; fi'".format(
-                        cluster["name"],
-                        cluster["project_root_dir"],
-                        cluster["project_root_dir"],
-                        root_path,
-                        repo_url,
-                        project_name,
-                    )
+                root_dir = cluster["project_root_dir"]
+                root_path = "/".join(root_dir.split("/")[:-1])
+                project_name = root_dir.split("/")[-1]
+                self._run_command(
+                    f"ssh {cluster['name']} 'if [ -d {root_dir} ]; "
+                    f"then cd {root_dir}; git pull origin master; "
+                    f"else cd {root_path}; git clone {repo_url} {project_name}; fi'"
                 )
-                print(bash_script)
-                myCmd = os.popen(bash_script).read()
-                print(myCmd)
 
-        # make output_dir
         for cluster in clusters:
-            for i in range(len(cluster["exp_results_from"])):
-                bash_script = "ssh {} 'mkdir -p {}'".format(
-                    cluster["name"],
-                    cluster["exp_results_from"][i],
-                )
-                print(bash_script)
-                myCmd = os.popen(bash_script).read()
-                print(myCmd)
-
-                bash_script = "mkdir -p {}".format(cluster["exp_results_to"][i])
-                print(bash_script)
-                myCmd = os.popen(bash_script).read()
-                print(myCmd)
+            for remote_path, local_path in zip(
+                cluster["exp_results_from"], cluster["exp_results_to"]
+            ):
+                self._run_command(f"ssh {cluster['name']} 'mkdir -p {remote_path}'")
+                self._run_command(f"mkdir -p {local_path}")
 
         self.clusters = clusters.copy()
         self.script_path = script_path
         self.duration_between_two_polls = duration_between_two_polls
         self.export_params = export_params
         self.sbatch_params = sbatch_params
-        assert len(job_list) != 0
-        for i in range(len(job_list)):
-            if isinstance(job_list[i], int):
-                job_list[i] = (job_list[i], job_list[i])
-        self.job_list = job_list
-        # self.job_list = []
-        # for i in job_list:
-        #     if type(i) is int:
-        #         self.job_list.append(i)
-        #     elif type(i) is tuple:
-        #         assert(len(i) == 2 and type(i[0]) is int and type(i[1]) is int)
-        #         for j in range(i[0], i[1] + 1):
-        #             self.job_list.append(j)
-        #     else:
-        #         raise NotImplementedError
-        # assert len(self.job_list) == len(set(self.job_list))
-        # self.job_list.sort()
-        self.starting_job_list_index = (
-            0  # the index of the start element in self.job_list
-        )
-        self.starting_job_num = self.job_list[self.starting_job_list_index][0]
+        self.job_list = _normalize_job_list(job_list)
+        self.starting_job_list_index = 0
+        self.starting_job_num = self.job_list[0][0]
+
+    def _run_command(self, cmd):
+        """Single seam wrapping subprocess so tests can mock it.
+
+        Mirrors ``os.popen(cmd).read()`` semantics: captures stdout (returned
+        as text) and lets stderr inherit so failures stay visible.
+        """
+        print(cmd)
+        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, text=True)
+        print(result.stdout, end="")
+        return result.stdout
 
     def submit_jobs(self, job_array_string, cluster_name, account, project_root_dir):
-        arg_export = ",".join([f"{k}={v}" for k, v in self.export_params.items()])
-        arg_opt_sbatch = " ".join([f"--{k}={v}" for k, v in self.sbatch_params.items()])
-
-        bash_script = (
-            f"ssh {cluster_name} "
-            f"'cd {project_root_dir}; "
-            f"sbatch "
-            f"--array={job_array_string} "
-            f"--account={account} "
-            f"{arg_opt_sbatch} "
-            f"--export={arg_export} "
-            f"{self.script_path}'"
+        cmd = _build_sbatch_command(
+            cluster_name,
+            project_root_dir,
+            job_array_string,
+            account,
+            self.sbatch_params,
+            self.export_params,
+            self.script_path,
         )
+        self._run_command(cmd)
+        print(f"submit job array {job_array_string} to {cluster_name}.")
 
-        # remove multiple spaces
-        bash_script = " ".join(bash_script.split())
-
-        print(bash_script)
-        myCmd = os.popen(bash_script).read()
-        print(myCmd)
-        print("submit job array " + job_array_string + f" to {cluster_name}.")
-        # print(
-        #     "submit jobs from %d to %d to %s"
-        #     % (
-        #         self.starting_job_num,
-        #         self.starting_job_num + num_jobs - 1,
-        #         cluster_name,
-        #     )
-        # )
-        return
-
-    def submit(self):  # noqa: C901
+    def submit(self):
         for cluster in self.clusters:
-            bash_script = "ssh {} whoami".format(cluster["name"])
-            print(bash_script)
-            myCmd = os.popen(bash_script).read()
-            print(myCmd)
-            cluster["username"] = myCmd.split("\n")[0]
+            output = self._run_command(f"ssh {cluster['name']} whoami")
+            cluster["username"] = output.split("\n")[0]
 
         finish_submitting = False
         temp_clusters = self.clusters.copy()
+        script_basename = self.script_path.split("/")[-1]
         while True:
             for cluster in temp_clusters[:]:
-                bash_script = "ssh {} squeue -u {} -r".format(
-                    cluster["name"],
-                    cluster["username"],
+                output = self._run_command(
+                    _build_squeue_command(cluster["name"], cluster["username"])
                 )
-                print(bash_script)
-                myCmd = os.popen(bash_script).read()
-                print(myCmd)
-                lines = myCmd.split("\n")
-                num_current_jobs = 0
-                for line in lines:
-                    if self.script_path.split("/")[-1] in line:
-                        num_current_jobs += 1
+                num_current_jobs = _count_active_jobs(output, script_basename)
                 print(f"cluster {cluster['name']} has {num_current_jobs} jobs")
 
                 if finish_submitting:
                     if num_current_jobs == 0:
-                        for i in range(len(cluster["exp_results_from"])):
-                            Path(cluster["exp_results_to"][i]).mkdir(
-                                parents=True, exist_ok=True
-                            )
-                            bash_script = "scp -r {}:{}/* {}/".format(
-                                cluster["name"],
-                                cluster["exp_results_from"][i],
-                                cluster["exp_results_to"][i],
-                            )
-                            print(bash_script)
-                            myCmd = os.popen(bash_script).read()
-                            print(myCmd)
-
-                        temp_clusters.remove(cluster)
-                    if temp_clusters.__len__() == 0:
-                        print("Finish all experimental results copying.\nDone\n")
-                        exit(1)
-                elif num_current_jobs < cluster["capacity"]:
-                    job_array_string = ""
-                    for job_index in range(
-                        self.starting_job_list_index, len(self.job_list)
-                    ):
-                        assert self.job_list[job_index][1] >= self.starting_job_num
-                        if (
-                            self.job_list[job_index][1] - self.starting_job_num + 1
-                            <= cluster["capacity"] - num_current_jobs
+                        for remote_path, local_path in zip(
+                            cluster["exp_results_from"], cluster["exp_results_to"]
                         ):
-                            # if the total number of jobs from starting job to the job with index indicated
-                            # by self.job_list[job_index][1] is less than or equal to the total number of jobs can be submitted
-                            job_array_string += f",{self.starting_job_num}-{self.job_list[job_index][1]}"
-                            num_current_jobs += (
-                                self.job_list[job_index][1] - self.starting_job_num + 1
-                            )
-                            self.starting_job_list_index += 1
-                            if self.starting_job_list_index == len(self.job_list):
-                                finish_submitting = True
-                                break
-                            self.starting_job_num = self.job_list[
-                                self.starting_job_list_index
-                            ][0]
-                        else:
-                            if cluster["capacity"] != num_current_jobs:
-                                # submit some jobs if there are still empty slots,
-                                # otherwise just break and try the other cluster
-                                job_array_string += f",{self.starting_job_num}-{self.starting_job_num + cluster['capacity'] - num_current_jobs - 1}"
-                                self.num_current_jobs = cluster["capacity"]
-                                self.starting_job_num += (
-                                    cluster["capacity"] - num_current_jobs
+                            Path(local_path).mkdir(parents=True, exist_ok=True)
+                            self._run_command(
+                                _build_scp_command(
+                                    cluster["name"], remote_path, local_path
                                 )
-                            break
-                    job_array_string = job_array_string[1:]  # remove the first ','
-                    print("submit jobs " + job_array_string)
+                            )
+                        temp_clusters.remove(cluster)
+                    if len(temp_clusters) == 0:
+                        print("Finish all experimental results copying.\nDone\n")
+                        return
+                elif num_current_jobs < cluster["capacity"]:
+                    array_string, new_idx, new_num, just_finished = (
+                        _build_job_array_string(
+                            self.job_list,
+                            self.starting_job_list_index,
+                            self.starting_job_num,
+                            cluster["capacity"],
+                            num_current_jobs,
+                        )
+                    )
+                    self.starting_job_list_index = new_idx
+                    self.starting_job_num = new_num
+                    if just_finished:
+                        finish_submitting = True
+                    print("submit jobs " + array_string)
                     if finish_submitting:
                         print("Finish submitting all jobs")
-
                     self.submit_jobs(
-                        job_array_string,
+                        array_string,
                         cluster["name"],
                         cluster["account"],
                         cluster["project_root_dir"],
                     )
-                    # reach_cluster_capacity = (
-                    #         self.job_list[job_index] - self.job_list[self.starting_job_index] + 1 ==
-                    #         cluster["capacity"] - num_current_jobs
-                    # )
-                    # last_job = (job_index == len(self.job_list) - 1)
-                    # if last_job or reach_cluster_capacity or \
-                    #         self.job_list[job_index + 1] != self.job_list[job_index] + 1:
-                    # self.submit_jobs(
-                    #     self.job_list[job_index] - self.job_list[self.starting_job_index] + 1,
-                    #     cluster["name"],
-                    #     cluster["account"],
-                    #     cluster["project_root_dir"],
-                    # )
-
-                    # num_current_jobs += job_index - self.starting_job_index + 1
-                    # if not last_job:
-                    #     self.starting_job_index = job_index + 1
-                    # else:
-                    #     finish_submitting = True
-                    #     print("Finish submitting all jobs")
-                    #     break
-                    # if reach_cluster_capacity:
-                    #     break
 
             time.sleep(self.duration_between_two_polls)
