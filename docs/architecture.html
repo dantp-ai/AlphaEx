@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AlphaEx Architecture</title>
+<style>
+  :root {
+    --bg: #0a0d12;
+    --card: #11151c;
+    --card-2: #161b22;
+    --border: #1f2630;
+    --border-strong: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --heading: #f0f6fc;
+    --red: #f85149;
+    --orange: #d29922;
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 48px 40px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .container { max-width: 760px; margin: 0 auto; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    padding: 28px 36px;
+  }
+  .card-title {
+    font-size: 22px; font-weight: 600;
+    color: var(--heading); text-align: center; margin: 0;
+  }
+  .card-sub {
+    text-align: center; color: var(--text-dim);
+    font-size: 13px; margin: 6px 0 22px;
+  }
+  .pills {
+    display: flex; gap: 12px;
+    justify-content: center; flex-wrap: wrap;
+  }
+  .pill {
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    padding: 8px 18px; background: var(--card-2);
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px; color: var(--text);
+  }
+  .pill.red    { color: var(--red); }
+  .pill.orange { color: var(--orange); }
+  .pill.blue   { color: var(--blue); }
+  .pill.green  { color: var(--green); }
+  .pill.purple { color: var(--purple); }
+
+  .section-label {
+    text-transform: uppercase; letter-spacing: 0.12em;
+    font-size: 11px; color: var(--text-dim); margin-bottom: 18px;
+  }
+  .row {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 16px; margin: 22px 0;
+  }
+  .subcard {
+    background: var(--card-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px; padding: 24px 22px;
+    text-align: center;
+  }
+  .subcard h3 {
+    margin: 0 0 8px; font-size: 18px;
+    color: var(--heading); font-weight: 600;
+  }
+  .subcard p {
+    margin: 0 0 14px; color: var(--text-dim); font-size: 13px;
+  }
+  .subcard .pills { gap: 8px; }
+  .subcard .pill { padding: 6px 12px; font-size: 12px; }
+  .subcard.highlight {
+    border: 1.5px solid var(--green);
+    background: linear-gradient(180deg, rgba(63,185,80,0.06) 0%, var(--card-2) 100%);
+  }
+
+  .code {
+    margin-top: 22px; background: #0d1117;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 20px;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.7; color: var(--text);
+    overflow-x: auto;
+  }
+  .code .kw  { color: var(--purple); }
+  .code .fn  { color: var(--blue); }
+  .code .str { color: var(--orange); }
+  .code .com { color: var(--text-dim); font-style: italic; }
+
+  .arrow { text-align: center; color: var(--text-dim); margin: 14px 0; }
+  .arrow .glyph { display: block; color: var(--text-dim); font-size: 18px; line-height: 1; margin-bottom: 4px; }
+  .arrow .lbl { font-size: 12px; }
+
+  .footnote { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 12px; }
+
+  .toolkit-card {
+    border: 1.5px solid var(--red);
+    background: linear-gradient(180deg, rgba(248,81,73,0.04) 0%, var(--card) 100%);
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+
+    <!-- Your Experiment -->
+    <div class="card">
+      <h2 class="card-title">Your Experiment</h2>
+      <div class="card-sub">what you bring</div>
+      <div class="pills">
+        <span class="pill blue">variables.json</span>
+        <span class="pill orange">run.sh</span>
+        <span class="pill green">your python code</span>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <span class="glyph">↓</span>
+      <span class="lbl">defines a sweep + an entry script</span>
+    </div>
+
+    <!-- AlphaEx Toolkit -->
+    <div class="card toolkit-card">
+      <div class="section-label">ALPHAEX TOOLKIT</div>
+      <div class="row">
+        <div class="subcard">
+          <h3>Sweeper</h3>
+          <p>explodes config → distinct<br>(sweep_id → params)</p>
+        </div>
+        <div class="subcard">
+          <h3>Submitter</h3>
+          <p>routes job arrays · polls squeue ·<br>copies results back</p>
+        </div>
+      </div>
+      <pre class="code"><span>sweeper</span>   = <span class="fn">Sweeper</span>(<span class="str">"variables.json"</span>)
+<span>submitter</span> = <span class="fn">Submitter</span>(<span>clusters</span>, <span>job_list</span>, <span>script_path</span>, ...)
+<span>submitter</span>.<span class="fn">submit</span>()  <span class="com"># orchestrates over SSH</span></pre>
+    </div>
+
+    <div class="arrow">
+      <span class="glyph">↓</span>
+      <span class="lbl">ssh · sbatch · squeue · scp</span>
+    </div>
+
+    <!-- Slurm Endpoints -->
+    <div class="card">
+      <div class="section-label">SLURM ENDPOINTS</div>
+      <div class="row">
+        <div class="subcard">
+          <h3>Real HPC</h3>
+          <p>production clusters via ssh-config alias</p>
+          <div class="pills">
+            <span class="pill">cedar</span>
+            <span class="pill">mp2</span>
+            <span class="pill">beluga</span>
+          </div>
+        </div>
+        <div class="subcard highlight">
+          <h3>Mini-Slurm</h3>
+          <p>local docker sandbox<br><code>bash docker/setup.sh</code></p>
+          <div class="pills">
+            <span class="pill green">cluster-a :2221</span>
+            <span class="pill green">cluster-b :2222</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <span class="glyph">↓</span>
+      <span class="lbl">writes job stdout/stderr through bind mount</span>
+    </div>
+
+    <!-- Results -->
+    <div class="card">
+      <h2 class="card-title">Results</h2>
+      <div class="pills" style="margin-top:14px">
+        <span class="pill orange">test/output/submit_*.txt</span>
+        <span class="pill orange">test/error/submit_*.txt</span>
+      </div>
+      <div class="footnote">consumed by your post-processing (<code>Sweeper.search</code>, plotting, etc.)</div>
+    </div>
+
+  </div>
+</body>
+</html>
