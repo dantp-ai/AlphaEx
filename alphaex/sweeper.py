@@ -6,7 +6,7 @@
 import json
 
 
-class Sweeper(object):
+class Sweeper:
     """
     The purpose of this class is to take an index, identify a configuration
     of variables and create a Config object
@@ -104,21 +104,21 @@ class Sweeper(object):
         :return: the search result,
         a list of combinations of variables related to the key words
         """
-        
+
         # find in search dict keys that don't appear in sweeper
         delete = [key for key in search_dict if key not in self.keys_set]
         temp_search_dict = search_dict.copy()
         # delete keys
-        for key in delete: del temp_search_dict[key]
-            
+        for key in delete:
+            del temp_search_dict[key]
+
         search_result_list = []
 
         for idx in range(self.total_combinations):
-
             temp_dict = self.parse(idx)
 
             valid_temp_dict = True
-            for key, value in temp_search_dict.items():
+            for key in temp_search_dict:
                 if key not in temp_dict:
                     valid_temp_dict = False
                     break

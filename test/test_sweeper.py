@@ -18,27 +18,31 @@ def test_sweeper():
         rtn_dict = sweeper.parse(sweep_id)
 
         report = (
-            "idx: %d \nrun: %d\nsimulator: %s\nalgorithm: %s\nparam1: %s\nparam2: %s \nparam3: %s\nparam4: %s\nparam5: %s\nparam6: %s\n"
-            % (
-                sweep_id,
-                rtn_dict.get("run", None),
-                rtn_dict.get("simulator", None),
-                rtn_dict.get("algorithm", None),
-                rtn_dict.get("param1", None),
-                rtn_dict.get("param2", None),
-                rtn_dict.get("param3", None),
-                rtn_dict.get("param4", None),
-                rtn_dict.get("param5", None),
-                rtn_dict.get("param6", None),
-            )
+            f"idx: {sweep_id} \n"
+            f"run: {rtn_dict.get('run', None)}\n"
+            f"simulator: {rtn_dict.get('simulator', None)}\n"
+            f"algorithm: {rtn_dict.get('algorithm', None)}\n"
+            f"param1: {rtn_dict.get('param1', None)}\n"
+            f"param2: {rtn_dict.get('param2', None)} \n"
+            f"param3: {rtn_dict.get('param3', None)}\n"
+            f"param4: {rtn_dict.get('param4', None)}\n"
+            f"param5: {rtn_dict.get('param5', None)}\n"
+            f"param6: {rtn_dict.get('param6', None)}\n"
         )
         print(report)
 
         # test Sweeper.search
-    print(sweeper.search(
-        {
-            "param1": "param1_3", "param4": True, "a_key_not_in_sweeper": 0, "the_other_key_not_in_sweeper": True
-        }, num_runs))
+    print(
+        sweeper.search(
+            {
+                "param1": "param1_3",
+                "param4": True,
+                "a_key_not_in_sweeper": 0,
+                "the_other_key_not_in_sweeper": True,
+            },
+            num_runs,
+        )
+    )
 
 
 if __name__ == "__main__":
