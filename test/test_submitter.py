@@ -30,7 +30,6 @@ def test_submitter():
             ],
             "exp_results_to": ["test/output", "test/error"],
         },
-        
     ]
     job_list = [(1, 4), 6, (102, 105), 100, (8, 12), 107]
     repo_url = "https://github.com/yiwan-rl/AlphaEx.git"
