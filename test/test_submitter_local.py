@@ -34,6 +34,11 @@ def clean_output_dirs():
         if d.exists():
             shutil.rmtree(d)
         d.mkdir(parents=True)
+        # Container's alphaex (uid 1000) writes job output through the bind
+        # mount; on Linux that uid won't match the host user, so the dir
+        # must be world-writable. macOS Docker Desktop translates ownership
+        # transparently so this is a no-op there.
+        d.chmod(0o777)
     yield out_dir, err_dir
 
 
