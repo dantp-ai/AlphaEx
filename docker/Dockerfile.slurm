@@ -1,5 +1,11 @@
 FROM debian:bullseye-slim
 
+# Match the host user's UID so bind-mounted writes (test/output, test/error)
+# land with the right ownership without a chmod 0o777 fixture hack (#17).
+# Defaults to 1000; setup.sh overrides with the running user's id, and CI
+# overrides with the GitHub runner's id.
+ARG UID=1000
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd \
     && ssh-keygen -A \
-    && useradd --create-home --uid 1000 --shell /bin/bash alphaex \
+    && useradd --create-home --uid ${UID} --shell /bin/bash alphaex \
     && mkdir -p /var/spool/slurmctld /var/spool/slurmd /var/log/slurm \
     && chown slurm:slurm /var/spool/slurmctld /var/spool/slurmd /var/log/slurm
 
