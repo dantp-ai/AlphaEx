@@ -78,7 +78,7 @@ jobs:
         # per PR. The buildx GHA cache makes warm runs near-instant. (#18)
         # build-args is part of the cache key, so per-uid builds use separate
         # cache slots — acceptable since CI is always uid 1001.
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: docker
           file: docker/Dockerfile.slurm
