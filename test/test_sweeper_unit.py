@@ -232,6 +232,20 @@ def test_get_value_and_relative_idx_with_dict_value():
     assert rel == 0
 
 
+def test_get_value_and_relative_idx_raises_when_idx_out_of_range():
+    # Pre-fix: the fallback returned a bare int, so callers' tuple unpack would
+    # explode with a misleading "cannot unpack non-iterable int" one frame up.
+    # Post-fix: raise IndexError at the source with a useful message (issue #22).
+    with pytest.raises(IndexError, match="idx 99"):
+        Sweeper.get_value_and_relative_idx(["a", "b", "c"], 99)
+
+
+def test_get_value_and_relative_idx_raises_at_exact_boundary():
+    # idx == len(values) is the smallest out-of-range value for a leaf list.
+    with pytest.raises(IndexError):
+        Sweeper.get_value_and_relative_idx(["a", "b", "c"], 3)
+
+
 def test_minimal_single_value_sweep_runs_increment(tmp_path):
     cfg_path = _write_cfg(tmp_path, {"alpha": ["only"]})
     s = Sweeper(cfg_path)
