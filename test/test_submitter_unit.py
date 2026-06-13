@@ -1,7 +1,10 @@
+import subprocess
+
 import pytest
 
 from alphaex.submitter import (
     Submitter,
+    _build_git_sync_command,
     _build_job_array_string,
     _build_sbatch_command,
     _build_scp_command,
@@ -237,10 +240,12 @@ class FakeRunner:
         self.responses = responses
         self.queue_iter = iter(responses.get("squeue_sequence", []))
 
-    def __call__(self, cmd):
+    def __call__(self, cmd, check=False):
         # NOTE: monkeypatch assigns this instance as a class attribute on
         # Submitter, so attribute access does NOT bind `self` like a function
         # would. The submitter calls us as `runner(cmd)`, not `runner(self, cmd)`.
+        # `check` is accepted to match the production seam but ignored — the
+        # mock has no failure mode to surface.
         self.calls.append(cmd)
         if "whoami" in cmd:
             return self.responses.get("whoami", "alice") + "\n"
@@ -296,13 +301,18 @@ def test_submitter_init_skips_git_when_repo_url_is_none(submitter_with_runner):
     assert not any("git" in c for c in runner.calls)
 
 
-def test_submitter_init_invokes_git_clone_when_repo_url_given(submitter_with_runner):
+def test_submitter_init_invokes_git_sync_when_repo_url_given(submitter_with_runner):
     runner = FakeRunner({})
     submitter_with_runner(runner, repo_url="https://example.com/repo.git")
     git_calls = [c for c in runner.calls if "git " in c]
     assert len(git_calls) == 1
+    # The first-clone branch must still reach git clone:
     assert "git clone https://example.com/repo.git proj" in git_calls[0]
-    assert "git pull origin master" in git_calls[0]
+    # The update-existing-checkout branch hard-resets to the remote's default
+    # branch instead of guessing `master` (issue #14).
+    assert "git fetch origin" in git_calls[0]
+    assert "git remote set-head origin --auto" in git_calls[0]
+    assert "git reset --hard origin/HEAD" in git_calls[0]
 
 
 def test_submit_happy_path_drains_queue_and_copies_results(
@@ -330,3 +340,144 @@ def test_submit_happy_path_drains_queue_and_copies_results(
     assert "--time=00:10:00" in sbatches[0]
     assert "--export=k=v" in sbatches[0]
     assert "scp -r cedar:/home/alice/proj/test/output/* test/output/" in runner.calls
+
+
+# ----- _build_git_sync_command (issue #14) -----
+
+
+def test_build_git_sync_command_ssh_wraps_with_cluster_name():
+    cmd = _build_git_sync_command(
+        cluster_name="cedar",
+        root_dir="/home/alice/proj",
+        repo_url="https://example.com/repo.git",
+    )
+    assert cmd.startswith("ssh cedar '")
+    assert cmd.endswith("'")
+
+
+def test_build_git_sync_command_uses_origin_head_reset_when_dir_exists():
+    cmd = _build_git_sync_command(
+        cluster_name="cedar",
+        root_dir="/home/alice/proj",
+        repo_url="https://example.com/repo.git",
+    )
+    assert (
+        "if [ -d /home/alice/proj ]; "
+        "then cd /home/alice/proj "
+        "&& git fetch origin "
+        "&& git remote set-head origin --auto "
+        "&& git reset --hard origin/HEAD; "
+        "else cd /home/alice "
+        "&& git clone https://example.com/repo.git proj; "
+        "fi"
+    ) in cmd
+
+
+def test_build_git_sync_command_derives_clone_target_from_root_dir():
+    cmd = _build_git_sync_command(
+        cluster_name="cedar",
+        root_dir="/home/alice/deep/proj",
+        repo_url="https://example.com/repo.git",
+    )
+    assert "cd /home/alice/deep && git clone https://example.com/repo.git proj" in cmd
+
+
+# ----- Submitter._run_command exit-code handling (issue #12) -----
+
+
+def _make_completed(returncode, stdout="", stderr=""):
+    return subprocess.CompletedProcess(
+        args="dummy", returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+@pytest.fixture
+def submitter_no_io():
+    """Submitter whose __init__ does not invoke _run_command.
+
+    Achieved by omitting `repo_url` and `exp_results_{from,to}`, so the init
+    loops over zero work and never touches subprocess. Tests can then exercise
+    `_run_command` directly without needing to mock the seam first.
+    """
+    return Submitter(
+        clusters=[
+            {
+                "name": "cedar",
+                "capacity": 1,
+                "account": "def-sutton",
+                "project_root_dir": "/home/alice/proj",
+            }
+        ],
+        job_list=[(1, 1)],
+        script_path="test/submit.sh",
+    )
+
+
+def test_run_command_returns_stdout_on_success(monkeypatch, submitter_no_io):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _make_completed(0, stdout="ok\n")
+    )
+    assert submitter_no_io._run_command("echo ok") == "ok\n"
+
+
+def test_run_command_returns_stdout_when_check_false_and_returncode_nonzero(
+    monkeypatch, submitter_no_io
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _make_completed(1, stdout="partial\n", stderr="boom\n"),
+    )
+    assert submitter_no_io._run_command("false", check=False) == "partial\n"
+
+
+def test_run_command_raises_when_check_true_and_returncode_nonzero(
+    monkeypatch, submitter_no_io
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _make_completed(
+            42, stdout="partial out\n", stderr="permission denied\n"
+        ),
+    )
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        submitter_no_io._run_command("false", check=True)
+    assert exc_info.value.returncode == 42
+    assert exc_info.value.stdout == "partial out\n"
+    assert exc_info.value.stderr == "permission denied\n"
+
+
+# ----- Submitter._sleep seam + max_polls cap (issue #13) -----
+
+
+def test_submit_calls_sleep_seam_between_polls(monkeypatch, submitter_with_runner):
+    # Two empty squeue responses: iter 1 submits (and finishes); iter 2
+    # observes empty queue, copies results, and returns. One sleep between.
+    runner = FakeRunner({"squeue_sequence": ["JOBID NAME ST\n"] * 2})
+    sleep_calls = []
+    monkeypatch.setattr(Submitter, "_sleep", lambda self, s: sleep_calls.append(s))
+    submitter = submitter_with_runner(runner, duration_between_two_polls=7)
+    submitter.submit()
+    assert sleep_calls == [7]
+
+
+def test_submit_raises_runtime_error_when_max_polls_exceeded(submitter_with_runner):
+    # squeue always returns full → cluster never drains. Without the cap this
+    # is the spin-forever scenario the issue calls out.
+    busy = "1 submit.sh R alice\n2 submit.sh R alice\n3 submit.sh R alice\n"
+    runner = FakeRunner({"squeue_sequence": [busy] * 10})
+    submitter = submitter_with_runner(runner, max_polls=3, duration_between_two_polls=0)
+    with pytest.raises(RuntimeError, match="max_polls=3"):
+        submitter.submit()
+
+
+def test_submit_unbounded_by_default(monkeypatch, submitter_with_runner):
+    # max_polls defaults to None — no RuntimeError, just relies on the
+    # happy-path drain. This guards against a regression where someone
+    # tightens the default.
+    runner = FakeRunner({"squeue_sequence": ["JOBID NAME ST\n"] * 2})
+    monkeypatch.setattr(Submitter, "_sleep", lambda self, s: None)
+    submitter = submitter_with_runner(runner)
+    assert submitter.max_polls is None
+    submitter.submit()  # must complete cleanly

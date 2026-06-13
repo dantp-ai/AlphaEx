@@ -132,6 +132,31 @@ def _count_active_jobs(squeue_output, script_basename):
     return sum(1 for line in squeue_output.split("\n") if script_basename in line)
 
 
+def _build_git_sync_command(cluster_name, root_dir, repo_url):
+    """Build the ssh command that ensures the project repo is up to date on a cluster.
+
+    If ``root_dir`` exists on the cluster the working tree is hard-reset to the
+    remote's current default branch (resolved via ``origin/HEAD``). This sidesteps
+    the legacy ``git pull origin master`` form, which silently no-ops on every
+    ``main``-default repo (issue #14).
+
+    If ``root_dir`` does not exist it is created by cloning ``repo_url`` into
+    ``<root_dir>/..``; the clone implicitly checks out the remote's default branch.
+
+    The reset is destructive of any cluster-side local changes — a conscious
+    trade-off for "the cluster should mirror the remote".
+    """
+    root_path, _, project_name = root_dir.rpartition("/")
+    update = (
+        f"cd {root_dir} "
+        "&& git fetch origin "
+        "&& git remote set-head origin --auto "
+        "&& git reset --hard origin/HEAD"
+    )
+    clone = f"cd {root_path} && git clone {repo_url} {project_name}"
+    return f"ssh {cluster_name} 'if [ -d {root_dir} ]; then {update}; else {clone}; fi'"
+
+
 class Submitter:
     """
     Create a job submitter and which will ssh to clusters and submit slurm array jobs.
@@ -151,8 +176,15 @@ class Submitter:
             for more details https://slurm.schedmd.com/sbatch.html)
         duration_between_two_polls (int): duration between two polls in seconds.
             Default value is 60.
-        repo_url (str): experiment code's git repo url. If this is not provide,
+        repo_url (str): experiment code's git repo url. If this is not provided,
             the user needs to copy experiment code to each cluster manually.
+            When provided, each cluster's checkout is hard-reset to the remote's
+            current default branch — see ``_build_git_sync_command`` for the
+            destructive-update semantics.
+        max_polls (int): maximum number of poll cycles ``submit()`` may run
+            before raising ``RuntimeError``. ``None`` (the default) means
+            unbounded. Use this to guard against stuck clusters that never
+            drain.
 
     The clusters information is stored in a list of dictionaries.
 
@@ -188,6 +220,7 @@ class Submitter:
         sbatch_params=None,
         duration_between_two_polls=60,
         repo_url=None,
+        max_polls=None,
     ):
         if sbatch_params is None:
             sbatch_params = {}
@@ -198,21 +231,21 @@ class Submitter:
 
         if repo_url is not None:
             for cluster in clusters:
-                root_dir = cluster["project_root_dir"]
-                root_path = "/".join(root_dir.split("/")[:-1])
-                project_name = root_dir.split("/")[-1]
                 self._run_command(
-                    f"ssh {cluster['name']} 'if [ -d {root_dir} ]; "
-                    f"then cd {root_dir}; git pull origin master; "
-                    f"else cd {root_path}; git clone {repo_url} {project_name}; fi'"
+                    _build_git_sync_command(
+                        cluster["name"], cluster["project_root_dir"], repo_url
+                    ),
+                    check=True,
                 )
 
         for cluster in clusters:
             for remote_path, local_path in zip(
                 cluster["exp_results_from"], cluster["exp_results_to"]
             ):
-                self._run_command(f"ssh {cluster['name']} 'mkdir -p {remote_path}'")
-                self._run_command(f"mkdir -p {local_path}")
+                self._run_command(
+                    f"ssh {cluster['name']} 'mkdir -p {remote_path}'", check=True
+                )
+                self._run_command(f"mkdir -p {local_path}", check=True)
 
         self.clusters = clusters.copy()
         self.script_path = script_path
@@ -222,17 +255,39 @@ class Submitter:
         self.job_list = _normalize_job_list(job_list)
         self.starting_job_list_index = 0
         self.starting_job_num = self.job_list[0][0]
+        self.max_polls = max_polls
 
-    def _run_command(self, cmd):
+    def _run_command(self, cmd, check=False):
         """Single seam wrapping subprocess so tests can mock it.
 
-        Mirrors ``os.popen(cmd).read()`` semantics: captures stdout (returned
-        as text) and lets stderr inherit so failures stay visible.
+        Captures both stdout and stderr as text and prints them to keep the
+        live-tail UX of the previous ``os.popen`` form. ``stdout`` is returned;
+        callers that need ``stderr`` go through the raised exception below.
+
+        When ``check`` is ``True`` and the command's return code is non-zero,
+        raises ``subprocess.CalledProcessError`` carrying stdout and stderr.
+        This is how the orchestrator turns a failed ``sbatch`` / ``scp`` / ssh
+        into a loud failure instead of a silent no-op (issue #12).
         """
         print(cmd)
-        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, output=result.stdout, stderr=result.stderr
+            )
         return result.stdout
+
+    def _sleep(self, seconds):
+        """Single seam wrapping ``time.sleep`` so tests can mock it.
+
+        Mirrors the ``_run_command`` seam pattern: production sleeps; tests
+        monkeypatch the class attribute to drive the polling loop
+        deterministically without real wall-clock delay.
+        """
+        time.sleep(seconds)
 
     def submit_jobs(self, job_array_string, cluster_name, account, project_root_dir):
         cmd = _build_sbatch_command(
@@ -244,21 +299,23 @@ class Submitter:
             self.export_params,
             self.script_path,
         )
-        self._run_command(cmd)
+        self._run_command(cmd, check=True)
         print(f"submit job array {job_array_string} to {cluster_name}.")
 
     def submit(self):
         for cluster in self.clusters:
-            output = self._run_command(f"ssh {cluster['name']} whoami")
+            output = self._run_command(f"ssh {cluster['name']} whoami", check=True)
             cluster["username"] = output.split("\n")[0]
 
         finish_submitting = False
         temp_clusters = self.clusters.copy()
         script_basename = self.script_path.split("/")[-1]
+        polls = 0
         while True:
             for cluster in temp_clusters[:]:
                 output = self._run_command(
-                    _build_squeue_command(cluster["name"], cluster["username"])
+                    _build_squeue_command(cluster["name"], cluster["username"]),
+                    check=True,
                 )
                 num_current_jobs = _count_active_jobs(output, script_basename)
                 print(f"cluster {cluster['name']} has {num_current_jobs} jobs")
@@ -272,7 +329,8 @@ class Submitter:
                             self._run_command(
                                 _build_scp_command(
                                     cluster["name"], remote_path, local_path
-                                )
+                                ),
+                                check=True,
                             )
                         temp_clusters.remove(cluster)
                     if len(temp_clusters) == 0:
@@ -302,4 +360,10 @@ class Submitter:
                         cluster["project_root_dir"],
                     )
 
-            time.sleep(self.duration_between_two_polls)
+            polls += 1
+            if self.max_polls is not None and polls >= self.max_polls:
+                raise RuntimeError(
+                    f"submit() exceeded max_polls={self.max_polls} without "
+                    f"draining; {len(temp_clusters)} cluster(s) still active"
+                )
+            self._sleep(self.duration_between_two_polls)
