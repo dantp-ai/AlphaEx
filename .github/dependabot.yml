@@ -22,3 +22,9 @@ updates:
     groups:
       actions-minor-and-patch:
         update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2

@@ -48,8 +48,15 @@ $MARK_END
 EOF
 fi
 
-echo "[setup] building and starting the mini-slurm stack..."
-docker compose -f "$DOCKER_DIR/docker-compose.yml" up -d --build
+echo "[setup] starting the mini-slurm stack..."
+# CI's `local-slurm` job pre-builds the image via buildx + the GHA cache,
+# then exports ALPHAEX_PREBUILT_IMAGE=1 so we skip the redundant compose
+# build pass here. Local devs leave it unset and get the normal build.
+if [ "${ALPHAEX_PREBUILT_IMAGE:-}" = "1" ]; then
+    docker compose -f "$DOCKER_DIR/docker-compose.yml" up -d
+else
+    docker compose -f "$DOCKER_DIR/docker-compose.yml" up -d --build
+fi
 
 wait_for_ssh() {
     local host=$1
