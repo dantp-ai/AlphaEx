@@ -49,7 +49,7 @@ jobs:
         # Upload from one matrix slot only — the 4 Python versions all produce
         # equivalent reports, so uploading each one just adds noise. (#20)
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
