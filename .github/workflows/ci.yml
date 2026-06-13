@@ -72,7 +72,7 @@ jobs:
         # Pinning the alphaex user's uid to the runner's uid is what lets
         # bind-mounted writes land on the host without a chmod hack (#17).
         # Set as an env var here so the buildx step and setup.sh agree.
-        run: echo "ALPHAEX_BUILD_UID=$(id -u)" >> "$GITHUB_ENV"
+        run: echo "ALPHAEX_UID=$(id -u)" >> "$GITHUB_ENV"
       - name: Build slurm cluster image with GHA cache
         # Cold builds of bullseye + apt-install slurm/munge/sshd cost ~60-90s
         # per PR. The buildx GHA cache makes warm runs near-instant. (#18)
@@ -85,7 +85,7 @@ jobs:
           tags: alphaex-slurm
           load: true
           build-args: |
-            UID=${{ env.ALPHAEX_BUILD_UID }}
+            UID=${{ env.ALPHAEX_UID }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Bring up mini-slurm
