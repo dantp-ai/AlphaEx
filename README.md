@@ -49,7 +49,7 @@ uv pip install -e .
 ### What is Submitter
 Think about the case when you have 1000 jobs to run and 3 computer clusters available.
 It is not easy to manually assign jobs to clusters in an effective way.
-One reason is that the speed of computing varies across different cluster.
+One reason is that the speed of computing varies across different clusters.
 The other reason is that clusters may have different restrictions on the number of jobs submitted.
 Submitter automatically submits all jobs for you in a simple way.
 Here is how it works.
@@ -94,7 +94,11 @@ Host <cluster name>
 Next time when you want to add a new cluster, just repeat step 2 and step 3.
 
 #### Example
-Now you can use submitter. test/test_submitter.py is a good example to start with.
+Now you can use submitter. `test/test_submitter.py` is a good example to start with.
+The values that vary per HPC account (`project_root_dir`, `account`, `repo_url`)
+are read from `ALPHAEX_PROJECT_ROOT`, `ALPHAEX_ACCOUNT`, and `ALPHAEX_REPO_URL`
+in that file, so you can run it without editing — see the module docstring there
+for details. The literal values below are for illustration only.
 
 ```
 from alphaex.submitter import Submitter
@@ -157,7 +161,7 @@ Usually you would need to specify some parameters in your array-job submission s
 However, you are also allowed to specify them here instead of in your array-job submission script.
 In particular, you can specify parameters required by sbatch (e.g., time, mem-per-cpu) using sbatch_params,
 and you can specify other parameters you would like to pass to the sbatch script, using export_params.
-In this way, your array-job submission script can be common to many experiments and thus reuseable.
+In this way, your array-job submission script can be common to many experiments and thus reusable.
 `test/submit.sh` is an example of the array-job submission script (For more details about slurm, please refer to the [user manual](https://slurm.schedmd.com/).
 
 ```
@@ -180,13 +184,13 @@ In this simple example, each job outputs the `SLURM_ARRAY_TASK_ID` and the confi
 And the output will be written to `test/output/submit_<SLURM_ARRAY_TASK_ID>.txt`.
 
 From this project root directory run `python -m test.test_submitter` in the server.
-Since the total capacity of mp2 and cedar are less than the total number jobs you want to run,
+Since the total capacity of mp2 and cedar are less than the total number of jobs you want to run,
 submitter can not submit all of the jobs to these two clusters at once.
 Instead, it will submit array jobs with array indices 1-3 to cluster mp2, and submit array jobs 4,6,102 to cluster cedar.
 After that, it will monitor whether there are any submitted jobs finished.
 And if there are any, the submitter will submit same number of new jobs as the finished ones until all of the 16 jobs are submitted.
 
-After all jobs are submitted and one of the clusters finishes its all jobs, submitter will copy experimental results from that cluster to the server .
+After all jobs are submitted and one of the clusters finishes its all jobs, submitter will copy experimental results from that cluster to the server.
 And you can see your results in `test/output`
 
 

@@ -151,7 +151,7 @@ class Submitter:
             for more details https://slurm.schedmd.com/sbatch.html)
         duration_between_two_polls (int): duration between two polls in seconds.
             Default value is 60.
-        repo_url (str): experiment code's git repo url. If this is not provide,
+        repo_url (str): experiment code's git repo url. If this is not provided,
             the user needs to copy experiment code to each cluster manually.
 
     The clusters information is stored in a list of dictionaries.

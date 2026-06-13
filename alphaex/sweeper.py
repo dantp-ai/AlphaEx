@@ -31,7 +31,7 @@ class Sweeper:
         for key, values in config_dict.items():
             num_combinations = 0
             for value in values:
-                if type(value) is dict:
+                if isinstance(value, dict):
                     self.set_num_combinations_helper(value)
                     num_combinations += value["num_combinations"]
                 else:
@@ -59,7 +59,7 @@ class Sweeper:
             value, relative_idx = self.get_value_and_relative_idx(
                 values, int(idx / cumulative) % num_combinations
             )
-            if type(value) is dict:
+            if isinstance(value, dict):
                 self.parse_helper(relative_idx, value, rtv_dict)
             else:
                 rtv_dict[variable] = value
@@ -69,7 +69,7 @@ class Sweeper:
     def get_num_combinations(values):
         num_values = 0
         for value in values:
-            if type(value) is dict:
+            if isinstance(value, dict):
                 num_values += value["num_combinations"]
             else:
                 num_values += 1
@@ -79,14 +79,20 @@ class Sweeper:
     def get_value_and_relative_idx(values, idx):
         num_values = 0
         for value in values:
-            if type(value) is dict:
+            if isinstance(value, dict):
                 temp = value["num_combinations"]
             else:
                 temp = 1
             if idx < num_values + temp:
                 return value, idx - num_values
             num_values += temp
-        return num_values
+        # Pre-fix: returned `num_values` (a bare int) instead of a tuple, so
+        # the caller's `value, relative_idx = ...` unpack exploded with a
+        # misleading TypeError one frame up. Raising here surfaces the real
+        # cause at the source (issue #22).
+        raise IndexError(
+            f"idx {idx} exceeds total combinations {num_values} in {values!r}"
+        )
 
     def search(self, search_dict, num_runs):
         """
