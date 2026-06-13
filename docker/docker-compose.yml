@@ -3,6 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.slurm
+      args:
+        # Inherit the host user's UID at build time (see Dockerfile.slurm).
+        # Defaults to 1000 if the caller hasn't exported UID. setup.sh
+        # exports `UID=$(id -u)` for parity with the host. (#17)
+        UID: ${UID:-1000}
     image: alphaex-slurm
     hostname: cluster
     ports:
@@ -10,8 +15,6 @@ services:
     volumes:
       - ../:/home/alphaex/AlphaEx:rw
       - ./keys/authorized_keys:/etc/alphaex_authorized_keys:ro
-    privileged: true
-    cgroup: host
 
   cluster-b:
     image: alphaex-slurm
@@ -21,7 +24,5 @@ services:
     volumes:
       - ../:/home/alphaex/AlphaEx:rw
       - ./keys/authorized_keys:/etc/alphaex_authorized_keys:ro
-    privileged: true
-    cgroup: host
     depends_on:
       - cluster-a

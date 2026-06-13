@@ -68,15 +68,24 @@ jobs:
         run: uv pip install -e ".[dev]"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      - name: Resolve runner UID
+        # Pinning the alphaex user's uid to the runner's uid is what lets
+        # bind-mounted writes land on the host without a chmod hack (#17).
+        # Set as an env var here so the buildx step and setup.sh agree.
+        run: echo "ALPHAEX_BUILD_UID=$(id -u)" >> "$GITHUB_ENV"
       - name: Build slurm cluster image with GHA cache
         # Cold builds of bullseye + apt-install slurm/munge/sshd cost ~60-90s
         # per PR. The buildx GHA cache makes warm runs near-instant. (#18)
+        # build-args is part of the cache key, so per-uid builds use separate
+        # cache slots — acceptable since CI is always uid 1001.
         uses: docker/build-push-action@v6
         with:
           context: docker
           file: docker/Dockerfile.slurm
           tags: alphaex-slurm
           load: true
+          build-args: |
+            UID=${{ env.ALPHAEX_BUILD_UID }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Bring up mini-slurm

@@ -49,6 +49,10 @@ EOF
 fi
 
 echo "[setup] starting the mini-slurm stack..."
+# Export the host user's UID so the image's `alphaex` user owns bind-mounted
+# writes natively (see docker-compose.yml's build.args and Dockerfile.slurm).
+# CI passes the same UID into its prebuild step before this script runs.
+export UID=$(id -u)
 # CI's `local-slurm` job pre-builds the image via buildx + the GHA cache,
 # then exports ALPHAEX_PREBUILT_IMAGE=1 so we skip the redundant compose
 # build pass here. Local devs leave it unset and get the normal build.
