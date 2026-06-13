@@ -67,7 +67,7 @@ jobs:
       - name: Install dev extras
         run: uv pip install -e ".[dev]"
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Resolve runner UID
         # Pinning the alphaex user's uid to the runner's uid is what lets
         # bind-mounted writes land on the host without a chmod hack (#17).
