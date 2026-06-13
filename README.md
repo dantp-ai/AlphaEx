@@ -1,5 +1,8 @@
 <p><img src="./images/alphaex_logo.jpg" alt="test" width="200" height="200"></p>
 
+[![CI](https://github.com/dantp-ai/AlphaEx/actions/workflows/ci.yml/badge.svg)](https://github.com/dantp-ai/AlphaEx/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/dantp-ai/AlphaEx/graph/badge.svg)](https://codecov.io/gh/dantp-ai/AlphaEx)
+
 AlphaEx (Alpha Experiment) is a python toolkit that helps you manage large number of experiments easily and efficiently.
 
 With AlphaEx, you can:
