@@ -179,12 +179,9 @@ After all jobs are submitted and one of the clusters finishes its all jobs, Subm
 
 ### Running Submitter Locally (Mini-Slurm)
 
-For development or evaluation without an HPC account, `docker/` ships a
-two-container Slurm sandbox that the submitter can drive end-to-end over SSH,
-just like a real cluster.
+For development or evaluation without an HPC account, `docker/` ships a two-container SLURM sandbox that the Submitter can drive end-to-end over SSH, just like a real cluster.
 
-Prerequisites: Docker Desktop (or any Docker engine) with `docker compose`
-available.
+Prerequisites: [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or any Docker engine) with `docker compose` available.
 
 ```bash
 bash docker/setup.sh                                # build + start, wires ~/.ssh/config
@@ -193,27 +190,18 @@ ls test/output/                                     # submit_1.txt ... submit_4.
 bash docker/teardown.sh                             # stop containers + clean ~/.ssh/config
 ```
 
-`setup.sh` generates a dedicated ed25519 keypair under `docker/keys/`,
-appends `Host cluster-a` and `Host cluster-b` blocks to your `~/.ssh/config`
-(inside a guarded `# >>> alphaex-slurm` marker so teardown can remove them),
-publishes container SSH on ports 2221 and 2222, and waits for both clusters
-to accept logins. The repo is bind-mounted into each container at
-`/home/alphaex/AlphaEx`, so job output written to `test/output/` from inside
-the cluster lands directly on the host.
+`setup.sh` generates a dedicated ed25519 keypair under `docker/keys/`, appends `Host cluster-a` and `Host cluster-b` blocks to your `~/.ssh/config` (inside a guarded `# >>> alphaex-slurm` marker so teardown can remove them), publishes container SSH on ports 2221 and 2222, and waits for both clusters to accept logins. The repo is bind-mounted into each container at `/home/alphaex/AlphaEx`, so job output written to `test/output/` from inside the cluster lands directly on the host.
 
-This sandbox is meant for development of the submitter itself. It runs one
-node per cluster on a single host, uses a fake `alphaex` account, and has
-no scheduler accounting — it is not a substitute for a real cluster for
-running real experiments.
+This sandbox is meant for development of the submitter itself. It runs one node per cluster on a single host, uses a fake `alphaex` account, and has no scheduler accounting — it is not a substitute for a real cluster for running real experiments.
 
 ## Sweeper
-Using sweeper, you can sweep all the experiment variables using one click. These
-variables can be algorithms, simulators, parameters. You can define whatever you want as variables.
 
-To use sweeper, first define a json file which specifies all the combinations of variables that you want to sweep over.
+With Sweeper you can sweep all the experiment variables in one click. These variables can be algorithms, simulators, parameters. You can define whatever you want as variables.
+
+To use Sweeper, first define a json file which specifies all the combinations of variables that you want to sweep over.
 `cfg/variables.json` is an example:
 
-```
+```json
 {
 	"experiments":
 	[
@@ -263,11 +251,12 @@ To use sweeper, first define a json file which specifies all the combinations of
 ```
 
 **Three principles of writing this file are:**
-1. The file should start with a dictionary, not a list
-2. Lists and dictionaries should be nested in an alternative way
-3. Each combination of variables takes only one element from every list, and takes all elements from every dictionary.
 
-In our example, a legitimate combination of variables is
+1. The file should start with a dictionary, not a list
+2. Lists and dictionaries should alternate when nested
+3. Each variable combination draws one element from every list and all elements from every dictionary
+
+In our example, a valid combination of variables is:
 
 ```
 simulator: simulator_2
