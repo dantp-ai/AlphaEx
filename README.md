@@ -1,80 +1,81 @@
-<p><img src="./images/alphaex_logo.jpg" alt="test" width="200" height="200"></p>
+<div align="center">
+<img src="./images/alphaex_logo.jpg" alt="AlphaEx logo" width="180" height="180">
+
+# Run and sweep thousands of experiments across SLURM clusters
 
 [![CI](https://github.com/dantp-ai/AlphaEx/actions/workflows/ci.yml/badge.svg)](https://github.com/dantp-ai/AlphaEx/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/dantp-ai/AlphaEx/graph/badge.svg)](https://codecov.io/gh/dantp-ai/AlphaEx)
 
-AlphaEx (Alpha Experiment) is a python toolkit that helps you manage large number of experiments easily and efficiently.
+[**Submitter**](#submitter) | [**Sweeper**](#sweeper) | [**Install**](#install) | [**Local sandbox**](#local-sandbox-mini-slurm) | [**Citation**](#citation)
+</div>
 
-With AlphaEx, you can:
+## What is AlphaEx
+---
 
-1. Run multiple experiments on multiple SLURM-based computer clusters automatically.
-2. Sweep over experimental variables in a simple efficient way - just define a json file and do all sweeps with one click.
+AlphaEx is a small Python toolkit for managing large numbers of experiments. It does two things:
 
-The above two functions are implemented in two self-contained python scripts: `submitter.py` and `sweeper.py`.
+- **Submitter** - automatically distributes and reschedules SLURM array jobs across multiple clusters, respecting per-cluster capacity, then copies results back.
+- **Sweeper** - expands a single JSON spec into every combination of your experiment variables, indexed for one-click sweeps and post-hoc result lookup.
 
-## Architecture
+Each is a self-contained module: `alphaex/submitter.py` and `alphaex/sweeper.py`.
 
-<p align="center"><img src="./docs/architecture.png" alt="AlphaEx architecture: Sweeper + Submitter dispatching to real HPC clusters or the local mini-slurm Docker sandbox" width="640"></p>
+<p align="center"><img src="./docs/architecture.png" alt="AlphaEx architecture: Sweeper + Submitter dispatching to HPC clusters or the local mini-slurm sandbox" width="640"></p>
 
-**Warning**:
-
-Sweeper can be used in any machine with python 3.12 installed. But submitter is only compatible with [**SLURM**](https://slurm.schedmd.com/overview.html). Make sure you have access to at least one cluster with SLURM installed. If you want to try the submitter without an HPC account, see [Running Submitter Locally (Mini-Slurm)](#running-submitter-locally-mini-slurm) for a Docker-based two-cluster sandbox.
-
-## Dependencies
-1. python >= 3.9 (3.12 recommended)
-2. numpy >= 2.0
+> Sweeper runs anywhere with Python. Submitter requires [SLURM](https://slurm.schedmd.com/overview.html) - access to at least one SLURM cluster, or the Docker [local sandbox](#local-sandbox-mini-slurm).
 
 ## Installation
+---
+
+Requires Python >= 3.9 (3.12 recommended) and numpy >= 2.0.
+
 ```bash
 git clone https://github.com/dantp-ai/AlphaEx.git
 cd AlphaEx
-pip install -e .
+pip install -e .          # or: uv venv --python 3.12 && uv pip install -e .
 ```
-
-Or with [uv](https://docs.astral.sh/uv/):
-```bash
-uv venv --python 3.12
-uv pip install -e .
-```
-
-## Testing
-
-To test these two modules, run `python test/test_submitter.py` and `python test/test_sweeper.py` (submitter needs to be configured first with your own setting. Please refer to later sections.)
 
 ## Submitter
 
-### What is Submitter
+Given `N` jobs and a few clusters of differing speed and job limits, `Submitter` keeps every cluster filled to capacity, polls for completions, submits replacements until all jobs are done, then copies results back to the server.
 
-Think about the case when you have 1000 jobs to run and 3 computer clusters available. It is not easy to manually assign jobs to clusters in an effective way. One reason is that the speed of computing varies across different clusters. The other reason is that clusters may have different restrictions on the number of jobs submitted. Submitter automatically submits all jobs for you in a simple way. Here is how it works.
+```python
+from alphaex.submitter import Submitter
 
-1. Synchronize project code from git repo. This step is optional. You may choose to manually upload project code to clusters.
-<p><img src="./images/submitter_1.png" alt="test" width="300" height="400"></p>
+clusters = [
+    {"name": "cedar", "capacity": 3, "account": "def-account",
+     "project_root_dir": "/home/userA/.../AlphaEx",
+     "exp_results_from": ["/home/userA/.../AlphaEx/test/output"],
+     "exp_results_to": ["test/output"]},
+]
+job_list = [(1, 4), 6, (102, 105), 100]   # (1, 4) expands to 1,2,3,4
 
-2. Submit jobs to each cluster. After submission, the number of jobs in each cluster will be the cluster's capacity, which is specified by your configuration.
-<p><img src="./images/submitter_2.png" alt="test" width="300" height="300"></p>
+Submitter(
+    clusters, job_list, script_path="test/submit.sh",
+    export_params={"python_module": "test.my_experiment_entrypoint",
+                   "config_file": "test/cfg/variables.json"},
+    sbatch_params={"time": "00:10:00", "mem-per-cpu": "1G"},
+    repo_url="https://github.com/dantp-ai/AlphaEx.git",
+    duration_between_two_polls=60,
+).submit()
+```
 
-3. Monitor clusters to see if there any jobs have finished
-<p><img src="./images/submitter_3.png" alt="test" width="300" height="300"></p>
+`export_params` / `sbatch_params` let one generic `submit.sh` serve many experiments. The runnable example is `test/test_submitter.py` (reads `ALPHAEX_PROJECT_ROOT`, `ALPHAEX_ACCOUNT`, `ALPHAEX_REPO_URL` from the environment).
 
-4. If there are any, submit the same number of new jobs as the finished ones until all the jobs are submitted.
-<p><img src="./images/submitter_4.png" alt="test" width="300" height="300"></p>
+> **Tip:** the server must stay online while polling - run it on a cluster login node under `tmux`, not a laptop.
 
-5. When all the jobs are finished, copy experimental results from clusters to the server
-<p><img src="./images/submitter_5.png" alt="test" width="300" height="230"></p>
+<details>
+<summary>SSH setup (passwordless cluster access)</summary>
 
-### How to Use Submitter
-
-To use Submitter, you need to first have ssh access to clusters from the server, so that whenever you ssh into a cluster, you just type in `ssh <cluster name>` without entering the full URL of the cluster, your username, and your password.
-
-#### Setup SSH client config
-
-The next three steps help you do this. In your server's home directory, execute:
-
-1. `ssh-keygen`
-2. `ssh-copy-id <username>@<cluster url>`
-3. Add the cluster information in `.ssh/config`
+Submitter reaches clusters via `ssh <cluster name>`, so configure key-based access first:
 
 ```bash
+ssh-keygen
+ssh-copy-id <username>@<cluster url>
+```
+
+Then add each cluster to `~/.ssh/config`:
+
+```
 Host *
     AddKeysToAgent yes
     IdentityFile ~/.ssh/id_rsa
@@ -83,249 +84,73 @@ Host <cluster name>
     HostName <cluster url>
     User <username>
 ```
+</details>
 
-Next time you want to add a new cluster, just repeat step 2-3.
-
-#### Example
-
-Now you can use Submitter. `test/test_submitter.py` is a good example to start with. The values that vary per HPC account (`project_root_dir`, `account`, `repo_url`) are read from `ALPHAEX_PROJECT_ROOT`, `ALPHAEX_ACCOUNT`, and `ALPHAEX_REPO_URL` in that file, so you can run it without editing - see the module docstring there for details. The literal values below are for illustration only.
-
-```python
-from alphaex.submitter import Submitter
-
-
-def test_submitter():
-    clusters = [
-        {
-            "name": "cedar",
-            "capacity": 3,
-            "account": "def-account",
-            "project_root_dir": "/home/userA/projects/def-account/userA/AlphaEx",
-            "exp_results_from": [
-                "/home/userA/projects/def-account/userA/AlphaEx/test/output",
-                "/home/userA/projects/def-account/userA/AlphaEx/test/error",
-            ],
-            "exp_results_to": ["test/output", "test/error"],
-        },
-        {
-            "name": "mp2",
-            "capacity": 3,
-            "account": "def-account",
-            "project_root_dir": "/home/userA/projects/def-account/userA/AlphaEx",
-            "exp_results_from": [
-                "/home/account/projects/def-account/userA/AlphaEx/test/output",
-                "/home/account/projects/def-account/userA/AlphaEx/test/error",
-            ],
-            "exp_results_to": ["test/output", "test/error"],
-        },
-
-    ]
-    job_list = [(1, 4), 6, (102, 105), 100, (8, 12), 107]
-    repo_url = "https://github.com/dantp-ai/AlphaEx.git"
-    script_path = "test/submit.sh"
-    submitter = Submitter(
-        clusters,
-        job_list,
-        script_path,
-        export_params={
-            "python_module": "test.my_experiment_entrypoint",
-            "config_file": "test/cfg/variables.json",
-        },
-        sbatch_params={
-            "time": "00:10:00",
-            "mem-per-cpu": "1G",
-            "job-name": script_path.split("/")[1],
-        },
-        repo_url=repo_url,
-        duration_between_two_polls=60,
-    )
-    submitter.submit()
-
-
-if __name__ == "__main__":
-    test_submitter()
-```
-
-Note that when you specify array-job ids using ```job_list = [(1, 4), 6, (102, 105), 100, (8, 12), 107]```,  ```(1, 4)``` means 1, 2, 3, 4.
-
-Usually you would need to specify some parameters in your array-job submission script (e.g., `test/submit.sh` here). However, you are also allowed to specify them here instead of in your array-job submission script. In particular, you can specify parameters required by `sbatch` (e.g., `time`, `mem-per-cpu`) using `sbatch_params`, and you can specify other parameters you would like to pass to the `sbatch` script, using `export_params`. In this way, your array-job submission script can be common to many experiments and thus reusable.
-`test/submit.sh` is an example of the array-job submission script. For more details on how SLURM works, please refer to the official [user manual](https://slurm.schedmd.com/).
+<details>
+<summary>Example array-job script (<code>test/submit.sh</code>)</summary>
 
 ```bash
 #!/bin/bash
-
 #SBATCH --output=test/output/submit_%a.txt
 #SBATCH --error=test/error/submit_%a.txt
 
 export OMP_NUM_THREADS=1
-
 module load python/3.12
 
-echo "${python_module}" "${SLURM_ARRAY_TASK_ID}" "${config_file}"
 python -m "${python_module}" "${SLURM_ARRAY_TASK_ID}" "${config_file}"
-
 ```
 
-In this simple example, each job outputs the `SLURM_ARRAY_TASK_ID` and the configuration filename `variables.json`. The `SLURM_ARRAY_TASK_ID` will be assigned by Submitter automatically and the output will be written to `test/output/submit_<SLURM_ARRAY_TASK_ID>.txt`.
-
-From this project's root directory run `python -m test.test_submitter` from the server. Since the total capacity of mp2 and cedar are less than the total number of jobs you want to run, Submitter can not submit all of the jobs to these two clusters at once. Instead, it will submit array jobs with array indices 1-3 to cluster mp2, and submit array jobs 4,6,102 to cluster cedar. After that, it will monitor whether there are any submitted jobs finished. And if there are any, the Submitter will submit same number of new jobs as the finished ones until all of the 16 jobs are submitted.
-
-After all jobs are submitted and one of the clusters finishes its all jobs, Submitter will copy experimental results from that cluster to the server, and you can see your results in `test/output`
-
-
-### Tips
-
-- Since the server needs to keep running a program to monitor job status and submit new jobs, it may not be a good idea to use your own laptop as the server because the laptop may lose internet connection. Our suggestion is to use one cluster as the server and use a program like `tmux` to make sure the monitor program runs in the background even if you logout from the server.
-
-### Running Submitter Locally (Mini-Slurm)
-
-For development or evaluation without an HPC account, `docker/` ships a two-container SLURM sandbox that the Submitter can drive end-to-end over SSH, just like a real cluster.
-
-Prerequisites: [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or any Docker engine) with `docker compose` available.
-
-```bash
-bash docker/setup.sh                                # build + start, wires ~/.ssh/config
-ALPHAEX_LOCAL_SLURM=1 uv run pytest test/test_submitter_local.py -v
-ls test/output/                                     # submit_1.txt ... submit_4.txt
-bash docker/teardown.sh                             # stop containers + clean ~/.ssh/config
-```
-
-`setup.sh` generates a dedicated ed25519 keypair under `docker/keys/`, appends `Host cluster-a` and `Host cluster-b` blocks to your `~/.ssh/config` (inside a guarded `# >>> alphaex-slurm` marker so teardown can remove them), publishes container SSH on ports 2221 and 2222, and waits for both clusters to accept logins. The repo is bind-mounted into each container at `/home/alphaex/AlphaEx`, so job output written to `test/output/` from inside the cluster lands directly on the host.
-
-This sandbox is meant for development of the submitter itself. It runs one node per cluster on a single host, uses a fake `alphaex` account, and has no scheduler accounting — it is not a substitute for a real cluster for running real experiments.
+`SLURM_ARRAY_TASK_ID` is assigned by Submitter; output lands in `test/output/submit_<id>.txt`.
+</details>
 
 ## Sweeper
 
-With Sweeper you can sweep all the experiment variables in one click. These variables can be algorithms, simulators, parameters. You can define whatever you want as variables.
+Define every variable combination - algorithms, simulators, parameters - in one JSON file. `cfg/variables.json` is a full example.
 
-To use Sweeper, first define a json file which specifies all the combinations of variables that you want to sweep over.
-`cfg/variables.json` is an example:
-
-```json
-{
-	"experiments":
-	[
-	    {
-	        "simulator": ["simulator_1"],
-	        "algorithm and parameters": [
-	            {
-	                "algorithm": ["algorithm_1"],
-	                "param1-2":
-	                [
-	                    {
-	                        "param1": ["param1_1", "param1_2"],
-	                        "param2": [0.1, 0.2]
-	                    },
-	                    {
-	                        "param1": ["param1_3", "param1_4"],
-	                        "param2": [0.3, 0.4]
-	                    }
-	                ],
-	                "param3": [1, 2, 3]
-	            },
-
-	            {
-	                "algorithm": ["algorithm_2"],
-	                "param1":["param1_3", "param1_4"],
-	                "param4": [true, false]
-	            }
-	        ]
-	    },
-		{
-	        "simulator": ["simulator_2"],
-	        "algorithm and parameters": [
-	            {
-	                "algorithm": ["algorithm_2"],
-	                "param1":["param1_3", "param1_4"],
-	                "param4": [true, false]
-	            },
-		        {
-	                "algorithm": ["algorithm_3"],
-	                "param5":["param5_1"],
-	                "param6": [true]
-	            }
-	        ]
-	    }
-	]
-}
-```
-
-**Three principles of writing this file are:**
-
-1. The file should start with a dictionary, not a list
-2. Lists and dictionaries should alternate when nested
-3. Each variable combination draws one element from every list and all elements from every dictionary
-
-In our example, a valid combination of variables is:
-
-```
-simulator: simulator_2
-algorithm: algorithm_3
-param1: None
-param2: None
-param3: None
-param4: None
-param5: param5_1
-param6: True
-```
-
-Sweeper has two useful methods:
-
-The `parse(..)` method generates a combination of variables, given its corresponding index `idx`. This method can be used for sweeping over all different combinations of variables.
-
-The `search(..)` method takes `search_dict` and `num_runs` as input. The search method generates a list which includes keywords and their values specified in `search_dict` and all combinations of unspecified variables. In addition, for each combination of variables, a list of indices corresponding to this combination will be generated. Note that if a key in `search_dict` is any variable, then that key will be ignored. As a result, you don't have to remove irrelevant items in the search_dict. This method can be used for post-processing. For example, after getting all experiment results, you may use this method to search all of the results related to `search_dict`.
-
-`test/test_sweeper.py` is an example of using these two methods:
+Three rules for the file:
+1. Start with a dictionary, not a list.
+2. Lists and dictionaries alternate when nested.
+3. Each combination draws one element from every list and all elements from every dictionary.
 
 ```python
-import os
-
 from alphaex.sweeper import Sweeper
 
-
-def test_sweeper():
-    cfg_dir = "test/cfg"
-    sweep_file_name = "variables.json"
-    num_runs = 10
-    # test Sweeper.parse
-    sweeper = Sweeper(os.path.join(cfg_dir, sweep_file_name))
-    for sweep_id in range(0, sweeper.total_combinations * num_runs):
-        rtn_dict = sweeper.parse(sweep_id)
-
-        report = (
-            "idx: %d \nrun: %d\nsimulator: %s\nalgorithm: %s\nparam1: %s\nparam2: %s \nparam3: %s\nparam4: %s\nparam5: %s\nparam6: %s\n"
-            % (
-                sweep_id,
-                rtn_dict.get("run", None),
-                rtn_dict.get("simulator", None),
-                rtn_dict.get("algorithm", None),
-                rtn_dict.get("param1", None),
-                rtn_dict.get("param2", None),
-                rtn_dict.get("param3", None),
-                rtn_dict.get("param4", None),
-                rtn_dict.get("param5", None),
-                rtn_dict.get("param6", None),
-            )
-        )
-        print(report)
-
-        # test Sweeper.search
-    print(sweeper.search(
-        {
-            "param1": "param1_3", "param4": True, "a_key_not_in_sweeper": 0, "the_other_key_not_in_sweeper": True
-        }, num_runs))
-
-
-if __name__ == "__main__":
-    test_sweeper()
+sweeper = Sweeper("test/cfg/variables.json")
+sweeper.total_combinations                 # number of distinct combinations
+cfg = sweeper.parse(idx)                   # combination (+ run number) for a sweep index
+hits = sweeper.search({"param1": "param1_3", "param4": True}, num_runs=10)
 ```
 
+- `parse(idx)` maps a flat index to one variable combination - drive your sweep by iterating `range(total_combinations * num_runs)`.
+- `search(search_dict, num_runs)` returns all combinations matching `search_dict` (keys not in the sweep are ignored) with their indices - handy for collecting results after a run.
+
+`test/test_sweeper.py` is a complete runnable example.
+
+## Local sandbox (mini-slurm)
+
+`docker/` ships a two-cluster SLURM sandbox so you can drive Submitter end-to-end over SSH without an HPC account. Requires Docker with `docker compose`.
+
+```bash
+bash docker/setup.sh                                          # build, start, wire ~/.ssh/config
+ALPHAEX_LOCAL_SLURM=1 uv run pytest test/test_submitter_local.py -v
+ls test/output/                                               # submit_1.txt ... submit_4.txt
+bash docker/teardown.sh                                       # stop containers, clean ~/.ssh/config
+```
+
+`setup.sh` generates a dedicated keypair under `docker/keys/`, adds guarded `Host cluster-a` / `Host cluster-b` blocks to `~/.ssh/config`, and publishes SSH on ports 2221/2222. The repo is bind-mounted into each container, so job output appears directly on the host. It is for developing the Submitter itself - single node per cluster, fake account, no accounting - not a substitute for a real cluster.
+
+## Testing
+
+```bash
+uv run pytest                                  # unit tests
+uv run pytest test/test_sweeper.py             # Sweeper end-to-end
+```
+
+`test/test_submitter.py` needs real cluster configuration and is excluded from the default run; use the [local sandbox](#local-sandbox-mini-slurm) instead.
 
 ## Citation
 
-Please use the bibtex if you want to cite this repo
-
-```
+```bibtex
 @misc{alphaex,
   author = {Wan, Yi and Plop, Daniel},
   title = {AlphaEx: A Python Toolkit for Managing a Large Number of Experiments},
