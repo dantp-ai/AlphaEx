@@ -10,7 +10,6 @@
 </div>
 
 ## What is AlphaEx
----
 
 AlphaEx is a small Python toolkit for managing large numbers of experiments. It does two things:
 
@@ -24,7 +23,6 @@ Each is a self-contained module: `alphaex/submitter.py` and `alphaex/sweeper.py`
 > Sweeper runs anywhere with Python. Submitter requires [SLURM](https://slurm.schedmd.com/overview.html) - access to at least one SLURM cluster, or the Docker [local sandbox](#local-sandbox-mini-slurm).
 
 ## Installation
----
 
 Requires Python >= 3.9 (3.12 recommended) and numpy >= 2.0.
 
