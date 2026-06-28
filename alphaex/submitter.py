@@ -3,6 +3,7 @@
 # Permission given to modify the code as long as you keep this        #
 # declaration at the top                                              #
 #######################################################################
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -103,28 +104,33 @@ def _build_sbatch_command(
     export_params,
     script_path,
 ):
-    """Build the ``ssh <name> 'cd <dir>; sbatch ...'`` string."""
+    """Build the ``["ssh", <name>, "cd <dir> && sbatch ..."]`` argv list.
+
+    The ``ssh`` invocation is an argv list, so no local shell is involved. The
+    remote command (the third element) is a shell string run by the cluster's
+    own shell; interpolated paths are ``shlex.quote``d so a path with spaces
+    stays a single token (issue #15).
+    """
     arg_export = ",".join(f"{k}={v}" for k, v in export_params.items())
-    arg_opt_sbatch = " ".join(f"--{k}={v}" for k, v in sbatch_params.items())
-    cmd = (
-        f"ssh {cluster_name} "
-        f"'cd {project_root_dir}; "
-        f"sbatch "
-        f"--array={job_array_string} "
-        f"--account={account} "
-        f"{arg_opt_sbatch} "
-        f"--export={arg_export} "
-        f"{script_path}'"
-    )
-    return " ".join(cmd.split())
+    parts = [
+        f"cd {shlex.quote(project_root_dir)}",
+        "&&",
+        "sbatch",
+        f"--array={job_array_string}",
+        f"--account={account}",
+    ]
+    parts += [f"--{k}={v}" for k, v in sbatch_params.items()]
+    parts.append(f"--export={arg_export}")
+    parts.append(shlex.quote(script_path))
+    return ["ssh", cluster_name, " ".join(parts)]
 
 
 def _build_squeue_command(cluster_name, username):
-    return f"ssh {cluster_name} squeue -u {username} -r"
+    return ["ssh", cluster_name, "squeue", "-u", username, "-r"]
 
 
 def _build_scp_command(cluster_name, remote_path, local_path):
-    return f"scp -r {cluster_name}:{remote_path}/* {local_path}/"
+    return ["scp", "-r", f"{cluster_name}:{remote_path}/*", f"{local_path}/"]
 
 
 def _count_active_jobs(squeue_output, script_basename):
@@ -147,14 +153,19 @@ def _build_git_sync_command(cluster_name, root_dir, repo_url):
     trade-off for "the cluster should mirror the remote".
     """
     root_path, _, project_name = root_dir.rpartition("/")
+    root_dir_q = shlex.quote(root_dir)
+    root_path_q = shlex.quote(root_path)
+    repo_url_q = shlex.quote(repo_url)
+    project_name_q = shlex.quote(project_name)
     update = (
-        f"cd {root_dir} "
+        f"cd {root_dir_q} "
         "&& git fetch origin "
         "&& git remote set-head origin --auto "
         "&& git reset --hard origin/HEAD"
     )
-    clone = f"cd {root_path} && git clone {repo_url} {project_name}"
-    return f"ssh {cluster_name} 'if [ -d {root_dir} ]; then {update}; else {clone}; fi'"
+    clone = f"cd {root_path_q} && git clone {repo_url_q} {project_name_q}"
+    remote_cmd = f"if [ -d {root_dir_q} ]; then {update}; else {clone}; fi"
+    return ["ssh", cluster_name, remote_cmd]
 
 
 class Submitter:
@@ -243,9 +254,10 @@ class Submitter:
                 cluster["exp_results_from"], cluster["exp_results_to"]
             ):
                 self._run_command(
-                    f"ssh {cluster['name']} 'mkdir -p {remote_path}'", check=True
+                    ["ssh", cluster["name"], f"mkdir -p {shlex.quote(remote_path)}"],
+                    check=True,
                 )
-                self._run_command(f"mkdir -p {local_path}", check=True)
+                self._run_command(["mkdir", "-p", local_path], check=True)
 
         self.clusters = clusters.copy()
         self.script_path = script_path
@@ -260,6 +272,13 @@ class Submitter:
     def _run_command(self, cmd, check=False):
         """Single seam wrapping subprocess so tests can mock it.
 
+        ``cmd`` is an argv list run with ``shell=False`` (issue #15): no local
+        shell ever interprets the interpolated cluster names, paths, or account
+        names, removing the shell-injection category of bug. Commands that need
+        remote shell features (the git-sync heredoc, the ``cd <dir> && sbatch``
+        chain) are passed as ``["ssh", <name>, "<remote shell string>"]`` whose
+        remote string already ``shlex.quote``s its interpolated paths.
+
         Captures both stdout and stderr as text and prints them to keep the
         live-tail UX of the previous ``os.popen`` form. ``stdout`` is returned;
         callers that need ``stderr`` go through the raised exception below.
@@ -269,8 +288,8 @@ class Submitter:
         This is how the orchestrator turns a failed ``sbatch`` / ``scp`` / ssh
         into a loud failure instead of a silent no-op (issue #12).
         """
-        print(cmd)
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        print(shlex.join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout, end="")
         if result.stderr:
             print(result.stderr, end="")
@@ -304,7 +323,7 @@ class Submitter:
 
     def submit(self):
         for cluster in self.clusters:
-            output = self._run_command(f"ssh {cluster['name']} whoami", check=True)
+            output = self._run_command(["ssh", cluster["name"], "whoami"], check=True)
             cluster["username"] = output.split("\n")[0]
 
         finish_submitting = False
