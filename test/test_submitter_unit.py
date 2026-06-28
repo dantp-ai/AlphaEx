@@ -163,7 +163,7 @@ def test_build_job_array_string(
 # ----- _build_sbatch_command -----
 
 
-def test_build_sbatch_command_collapses_extra_spaces_with_empty_extras():
+def test_build_sbatch_command_formats_with_empty_extras():
     cmd = _build_sbatch_command(
         cluster_name="cedar",
         project_root_dir="/home/alice/proj",
@@ -173,10 +173,12 @@ def test_build_sbatch_command_collapses_extra_spaces_with_empty_extras():
         export_params={},
         script_path="test/submit.sh",
     )
-    assert cmd == (
-        "ssh cedar 'cd /home/alice/proj; sbatch --array=1-3 --account=def-sutton "
-        "--export= test/submit.sh'"
-    )
+    assert cmd == [
+        "ssh",
+        "cedar",
+        "cd /home/alice/proj && sbatch --array=1-3 --account=def-sutton "
+        "--export= test/submit.sh",
+    ]
 
 
 def test_build_sbatch_command_includes_sbatch_and_export_params():
@@ -189,26 +191,68 @@ def test_build_sbatch_command_includes_sbatch_and_export_params():
         export_params={"python_module": "test.entry", "config_file": "test/cfg.json"},
         script_path="test/submit.sh",
     )
-    assert cmd == (
-        "ssh cedar 'cd /home/alice/proj; sbatch --array=4-4,6-6 "
+    assert cmd == [
+        "ssh",
+        "cedar",
+        "cd /home/alice/proj && sbatch --array=4-4,6-6 "
         "--account=def-sutton --time=00:10:00 --mem-per-cpu=1G "
         "--export=python_module=test.entry,config_file=test/cfg.json "
-        "test/submit.sh'"
+        "test/submit.sh",
+    ]
+
+
+def test_build_sbatch_command_quotes_paths_with_spaces():
+    # A project dir or script path containing a space must be shell-quoted so
+    # the remote shell parses it as one token instead of splitting it.
+    cmd = _build_sbatch_command(
+        cluster_name="cedar",
+        project_root_dir="/home/alice/my proj",
+        job_array_string="1-3",
+        account="def-sutton",
+        sbatch_params={},
+        export_params={},
+        script_path="test/sub mit.sh",
     )
+    assert cmd[0] == "ssh"
+    assert cmd[1] == "cedar"
+    assert "cd '/home/alice/my proj' &&" in cmd[2]
+    assert cmd[2].endswith("'test/sub mit.sh'")
 
 
 # ----- small command builders -----
 
 
 def test_build_squeue_command():
-    assert _build_squeue_command("cedar", "alice") == "ssh cedar squeue -u alice -r"
+    assert _build_squeue_command("cedar", "alice") == [
+        "ssh",
+        "cedar",
+        "squeue",
+        "-u",
+        "alice",
+        "-r",
+    ]
+
+
+def test_build_squeue_command_keeps_cluster_name_as_single_arg():
+    # A cluster name with a space is one argv element, so it needs no quoting
+    # and can never break local shell parsing.
+    assert _build_squeue_command("my cluster", "alice") == [
+        "ssh",
+        "my cluster",
+        "squeue",
+        "-u",
+        "alice",
+        "-r",
+    ]
 
 
 def test_build_scp_command():
-    assert (
-        _build_scp_command("cedar", "/remote/output", "test/output")
-        == "scp -r cedar:/remote/output/* test/output/"
-    )
+    assert _build_scp_command("cedar", "/remote/output", "test/output") == [
+        "scp",
+        "-r",
+        "cedar:/remote/output/*",
+        "test/output/",
+    ]
 
 
 # ----- _count_active_jobs -----
@@ -246,10 +290,13 @@ class FakeRunner:
         # would. The submitter calls us as `runner(cmd)`, not `runner(self, cmd)`.
         # `check` is accepted to match the production seam but ignored — the
         # mock has no failure mode to surface.
+        #
+        # `cmd` is now an argv list; join it to a string for substring matching.
         self.calls.append(cmd)
-        if "whoami" in cmd:
+        text = " ".join(cmd)
+        if "whoami" in text:
             return self.responses.get("whoami", "alice") + "\n"
-        if "squeue" in cmd:
+        if "squeue" in text:
             try:
                 return next(self.queue_iter)
             except StopIteration:
@@ -291,28 +338,29 @@ def test_submitter_init_runs_mkdir_for_each_results_path(
 ):
     runner = FakeRunner({})
     submitter_with_runner(runner)
-    assert "ssh cedar 'mkdir -p /home/alice/proj/test/output'" in runner.calls
-    assert "mkdir -p test/output" in runner.calls
+    assert ["ssh", "cedar", "mkdir -p /home/alice/proj/test/output"] in runner.calls
+    assert ["mkdir", "-p", "test/output"] in runner.calls
 
 
 def test_submitter_init_skips_git_when_repo_url_is_none(submitter_with_runner):
     runner = FakeRunner({})
     submitter_with_runner(runner)
-    assert not any("git" in c for c in runner.calls)
+    assert not any("git" in " ".join(c) for c in runner.calls)
 
 
 def test_submitter_init_invokes_git_sync_when_repo_url_given(submitter_with_runner):
     runner = FakeRunner({})
     submitter_with_runner(runner, repo_url="https://example.com/repo.git")
-    git_calls = [c for c in runner.calls if "git " in c]
+    git_calls = [c for c in runner.calls if "git " in " ".join(c)]
     assert len(git_calls) == 1
+    git_cmd = " ".join(git_calls[0])
     # The first-clone branch must still reach git clone:
-    assert "git clone https://example.com/repo.git proj" in git_calls[0]
+    assert "git clone https://example.com/repo.git proj" in git_cmd
     # The update-existing-checkout branch hard-resets to the remote's default
     # branch instead of guessing `master` (issue #14).
-    assert "git fetch origin" in git_calls[0]
-    assert "git remote set-head origin --auto" in git_calls[0]
-    assert "git reset --hard origin/HEAD" in git_calls[0]
+    assert "git fetch origin" in git_cmd
+    assert "git remote set-head origin --auto" in git_cmd
+    assert "git reset --hard origin/HEAD" in git_cmd
 
 
 def test_submit_happy_path_drains_queue_and_copies_results(
@@ -332,14 +380,20 @@ def test_submit_happy_path_drains_queue_and_copies_results(
     submitter.submit()
 
     # Expected: one whoami, multiple squeue, one sbatch, one scp, no infinite loop.
-    assert any("whoami" in c for c in runner.calls)
-    sbatches = [c for c in runner.calls if "sbatch" in c]
+    assert any("whoami" in " ".join(c) for c in runner.calls)
+    sbatches = [c for c in runner.calls if "sbatch" in " ".join(c)]
     assert len(sbatches) == 1
-    assert "--array=1-3" in sbatches[0]
-    assert "--account=def-sutton" in sbatches[0]
-    assert "--time=00:10:00" in sbatches[0]
-    assert "--export=k=v" in sbatches[0]
-    assert "scp -r cedar:/home/alice/proj/test/output/* test/output/" in runner.calls
+    sbatch_cmd = " ".join(sbatches[0])
+    assert "--array=1-3" in sbatch_cmd
+    assert "--account=def-sutton" in sbatch_cmd
+    assert "--time=00:10:00" in sbatch_cmd
+    assert "--export=k=v" in sbatch_cmd
+    assert [
+        "scp",
+        "-r",
+        "cedar:/home/alice/proj/test/output/*",
+        "test/output/",
+    ] in runner.calls
 
 
 # ----- _build_git_sync_command (issue #14) -----
@@ -351,8 +405,10 @@ def test_build_git_sync_command_ssh_wraps_with_cluster_name():
         root_dir="/home/alice/proj",
         repo_url="https://example.com/repo.git",
     )
-    assert cmd.startswith("ssh cedar '")
-    assert cmd.endswith("'")
+    assert cmd[0] == "ssh"
+    assert cmd[1] == "cedar"
+    assert cmd[2].startswith("if [ -d ")
+    assert cmd[2].endswith("fi")
 
 
 def test_build_git_sync_command_uses_origin_head_reset_when_dir_exists():
@@ -361,7 +417,7 @@ def test_build_git_sync_command_uses_origin_head_reset_when_dir_exists():
         root_dir="/home/alice/proj",
         repo_url="https://example.com/repo.git",
     )
-    assert (
+    assert cmd[2] == (
         "if [ -d /home/alice/proj ]; "
         "then cd /home/alice/proj "
         "&& git fetch origin "
@@ -370,7 +426,7 @@ def test_build_git_sync_command_uses_origin_head_reset_when_dir_exists():
         "else cd /home/alice "
         "&& git clone https://example.com/repo.git proj; "
         "fi"
-    ) in cmd
+    )
 
 
 def test_build_git_sync_command_derives_clone_target_from_root_dir():
@@ -379,7 +435,22 @@ def test_build_git_sync_command_derives_clone_target_from_root_dir():
         root_dir="/home/alice/deep/proj",
         repo_url="https://example.com/repo.git",
     )
-    assert "cd /home/alice/deep && git clone https://example.com/repo.git proj" in cmd
+    assert (
+        "cd /home/alice/deep && git clone https://example.com/repo.git proj" in cmd[2]
+    )
+
+
+def test_build_git_sync_command_quotes_paths_with_spaces():
+    # Paths with spaces in the heredoc must be shell-quoted so the remote test
+    # and cd/clone parse them as single tokens.
+    cmd = _build_git_sync_command(
+        cluster_name="cedar",
+        root_dir="/home/alice/my proj",
+        repo_url="https://example.com/repo.git",
+    )
+    assert cmd[0] == "ssh"
+    assert "[ -d '/home/alice/my proj' ]" in cmd[2]
+    assert "cd '/home/alice/my proj'" in cmd[2]
 
 
 # ----- Submitter._run_command exit-code handling (issue #12) -----
@@ -417,7 +488,23 @@ def test_run_command_returns_stdout_on_success(monkeypatch, submitter_no_io):
     monkeypatch.setattr(
         subprocess, "run", lambda *a, **k: _make_completed(0, stdout="ok\n")
     )
-    assert submitter_no_io._run_command("echo ok") == "ok\n"
+    assert submitter_no_io._run_command(["echo", "ok"]) == "ok\n"
+
+
+def test_run_command_invokes_subprocess_without_shell(monkeypatch, submitter_no_io):
+    # The whole point of issue #15: commands run as argv lists with shell=False
+    # so interpolated values can never be reinterpreted by a shell.
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _make_completed(0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    submitter_no_io._run_command(["ssh", "cedar", "whoami"])
+    assert captured["cmd"] == ["ssh", "cedar", "whoami"]
+    assert captured["kwargs"].get("shell") is not True
 
 
 def test_run_command_returns_stdout_when_check_false_and_returncode_nonzero(
@@ -428,7 +515,7 @@ def test_run_command_returns_stdout_when_check_false_and_returncode_nonzero(
         "run",
         lambda *a, **k: _make_completed(1, stdout="partial\n", stderr="boom\n"),
     )
-    assert submitter_no_io._run_command("false", check=False) == "partial\n"
+    assert submitter_no_io._run_command(["false"], check=False) == "partial\n"
 
 
 def test_run_command_raises_when_check_true_and_returncode_nonzero(
@@ -442,7 +529,7 @@ def test_run_command_raises_when_check_true_and_returncode_nonzero(
         ),
     )
     with pytest.raises(subprocess.CalledProcessError) as exc_info:
-        submitter_no_io._run_command("false", check=True)
+        submitter_no_io._run_command(["false"], check=True)
     assert exc_info.value.returncode == 42
     assert exc_info.value.stdout == "partial out\n"
     assert exc_info.value.stderr == "permission denied\n"
