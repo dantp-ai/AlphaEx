@@ -15,84 +15,74 @@ class Sweeper:
 
     def __init__(self, config_file):
         with open(config_file) as f:
-            self.config_dict = json.load(f)
-        self.total_combinations = 1
-        self.keys_list = []
-        self.set_num_combinations()
-        self.keys_set = set(self.keys_list)
+            self._config_dict = json.load(f)
+        # Number of combinations each dict node yields, keyed by id() of the
+        # node. Kept in this class-owned map instead of being written back into
+        # the parsed config, so the user's data is never mutated (issue #39).
+        # _config_dict is held for the Sweeper's lifetime, so the ids stay valid.
+        self._counts = {}
+        self._keys = []
+        self.total_combinations = self._count(self._config_dict)
+        self._keys_set = set(self._keys)
 
-    def set_num_combinations(self):
-        # calculating total_combinations
-        self.set_num_combinations_helper(self.config_dict)
-        self.total_combinations = self.config_dict["num_combinations"]
+    def _count(self, node):
+        """Compute and memoize how many combinations the dict ``node`` yields.
 
-    def set_num_combinations_helper(self, config_dict):
-        num_combinations_in_list = 1
-        for key, values in config_dict.items():
-            num_combinations = 0
+        A dict's count is the product over its keys of the key's list count; a
+        list's count is the sum of its elements' counts; a scalar counts as 1.
+        Records every scalar variable name in ``self._keys`` along the way.
+        """
+        total = 1
+        for key, values in node.items():
+            list_count = 0
             for value in values:
                 if isinstance(value, dict):
-                    self.set_num_combinations_helper(value)
-                    num_combinations += value["num_combinations"]
+                    list_count += self._count(value)
                 else:
-                    num_combinations += 1
-                    self.keys_list.append(key)
-            num_combinations_in_list *= num_combinations
-        config_dict["num_combinations"] = num_combinations_in_list
-        return num_combinations_in_list
+                    list_count += 1
+                    self._keys.append(key)
+            total *= list_count
+        self._counts[id(node)] = total
+        return total
+
+    def _combinations_of(self, value):
+        """Number of combinations a single list element contributes."""
+        return self._counts[id(value)] if isinstance(value, dict) else 1
 
     def parse(self, idx):
-        rtn_dict = dict()
-        rtn_dict["run"] = int(idx / self.total_combinations)
-
-        self.parse_helper(idx, self.config_dict, rtn_dict)
-
+        rtn_dict = {"run": idx // self.total_combinations}
+        self._parse(idx, self._config_dict, rtn_dict)
         return rtn_dict
 
-    def parse_helper(self, idx, config_dict, rtv_dict):
+    def _parse(self, idx, node, rtn_dict):
+        # Mixed-radix decode: each key is a digit whose base is its list count,
+        # and `cumulative` is the place value of the current digit.
         cumulative = 1
-        # Populating sweep variables
-        for variable, values in config_dict.items():
-            if variable == "num_combinations":
-                continue
-            num_combinations = self.get_num_combinations(values)
-            value, relative_idx = self.get_value_and_relative_idx(
-                values, int(idx / cumulative) % num_combinations
+        for variable, values in node.items():
+            num_combinations = sum(self._combinations_of(v) for v in values)
+            value, relative_idx = self._select(
+                values, (idx // cumulative) % num_combinations
             )
             if isinstance(value, dict):
-                self.parse_helper(relative_idx, value, rtv_dict)
+                self._parse(relative_idx, value, rtn_dict)
             else:
-                rtv_dict[variable] = value
+                rtn_dict[variable] = value
             cumulative *= num_combinations
 
-    @staticmethod
-    def get_num_combinations(values):
-        num_values = 0
+    def _select(self, values, idx):
+        """Return ``(value, relative_idx)`` for the element of ``values`` that
+        index ``idx`` falls into, where each dict element spans
+        ``_combinations_of`` slots.
+        """
+        offset = 0
         for value in values:
-            if isinstance(value, dict):
-                num_values += value["num_combinations"]
-            else:
-                num_values += 1
-        return num_values
-
-    @staticmethod
-    def get_value_and_relative_idx(values, idx):
-        num_values = 0
-        for value in values:
-            if isinstance(value, dict):
-                temp = value["num_combinations"]
-            else:
-                temp = 1
-            if idx < num_values + temp:
-                return value, idx - num_values
-            num_values += temp
-        # Pre-fix: returned `num_values` (a bare int) instead of a tuple, so
-        # the caller's `value, relative_idx = ...` unpack exploded with a
-        # misleading TypeError one frame up. Raising here surfaces the real
-        # cause at the source (issue #22).
-        raise IndexError(
-            f"idx {idx} exceeds total combinations {num_values} in {values!r}"
-        )
+            width = self._combinations_of(value)
+            if idx < offset + width:
+                return value, idx - offset
+            offset += width
+        # A bare-int fallback used to make the caller's tuple unpack explode one
+        # frame up; raise at the source with a useful message instead (issue #22).
+        raise IndexError(f"idx {idx} exceeds total combinations {offset} in {values!r}")
 
     def search(self, search_dict, num_runs):
         """
@@ -110,40 +100,24 @@ class Sweeper:
         :return: the search result,
         a list of combinations of variables related to the key words
         """
-
-        # find in search dict keys that don't appear in sweeper
-        delete = [key for key in search_dict if key not in self.keys_set]
-        temp_search_dict = search_dict.copy()
-        # delete keys
-        for key in delete:
-            del temp_search_dict[key]
+        # Drop keys that are not swept variables; they cannot constrain a result.
+        relevant = {k: v for k, v in search_dict.items() if k in self._keys_set}
 
         search_result_list = []
-
         for idx in range(self.total_combinations):
-            temp_dict = self.parse(idx)
-
-            valid_temp_dict = True
-            for key in temp_search_dict:
-                if key not in temp_dict:
-                    valid_temp_dict = False
-                    break
-
-            if valid_temp_dict is False:
-                continue
-
-            search_result_list.append(
-                {
-                    "ids": [
-                        idx + run * self.total_combinations for run in range(num_runs)
-                    ]
-                }
+            combination = self.parse(idx)
+            matches = all(
+                key in combination and combination[key] == value
+                for key, value in relevant.items()
             )
-
-            for key, value in temp_dict.items():
-                if key in temp_search_dict and temp_search_dict[key] != value:
-                    search_result_list = search_result_list[:-1]
-                    break
-                search_result_list[-1][key] = value
-
+            if matches:
+                search_result_list.append(
+                    {
+                        "ids": [
+                            idx + run * self.total_combinations
+                            for run in range(num_runs)
+                        ],
+                        **combination,
+                    }
+                )
         return search_result_list
