@@ -3,6 +3,7 @@ import subprocess
 import pytest
 
 from alphaex.submitter import (
+    Cluster,
     Submitter,
     _build_git_sync_command,
     _build_job_array_string,
@@ -11,7 +12,6 @@ from alphaex.submitter import (
     _build_squeue_command,
     _count_active_jobs,
     _normalize_job_list,
-    _validate_cluster,
 )
 
 # ----- _normalize_job_list -----
@@ -43,7 +43,14 @@ def test_normalize_rejects_empty_list():
         _normalize_job_list([])
 
 
-# ----- _validate_cluster -----
+def test_normalize_does_not_mutate_input():
+    # Issue #42: the caller's job_list must be left untouched.
+    job_list = [1, (2, 5), 7]
+    _normalize_job_list(job_list)
+    assert job_list == [1, (2, 5), 7]
+
+
+# ----- Cluster.from_dict -----
 
 
 def _valid_cluster(**overrides):
@@ -57,40 +64,53 @@ def _valid_cluster(**overrides):
     return base
 
 
-def test_validate_defaults_exp_results_when_neither_specified():
-    cluster = _valid_cluster()
-    result = _validate_cluster(cluster)
-    assert result["exp_results_from"] == []
-    assert result["exp_results_to"] == []
+def test_from_dict_defaults_exp_results_when_neither_specified():
+    cluster = Cluster.from_dict(_valid_cluster())
+    assert cluster.exp_results_from == ()
+    assert cluster.exp_results_to == ()
 
 
-def test_validate_keeps_exp_results_when_both_specified():
-    cluster = _valid_cluster(
-        exp_results_from=["/r/a", "/r/b"], exp_results_to=["a", "b"]
+def test_from_dict_keeps_exp_results_when_both_specified():
+    cluster = Cluster.from_dict(
+        _valid_cluster(exp_results_from=["/r/a", "/r/b"], exp_results_to=["a", "b"])
     )
-    _validate_cluster(cluster)
-    assert cluster["exp_results_from"] == ["/r/a", "/r/b"]
-    assert cluster["exp_results_to"] == ["a", "b"]
+    assert cluster.exp_results_from == ("/r/a", "/r/b")
+    assert cluster.exp_results_to == ("a", "b")
+
+
+def test_from_dict_does_not_mutate_input():
+    # Issue #42: validating a cluster must not touch the caller's dict.
+    cluster = _valid_cluster()
+    Cluster.from_dict(cluster)
+    assert "exp_results_from" not in cluster
+    assert "exp_results_to" not in cluster
 
 
 @pytest.mark.parametrize("missing", ["name", "capacity", "account", "project_root_dir"])
-def test_validate_raises_on_missing_required_key(missing):
+def test_from_dict_raises_on_missing_required_key(missing):
     cluster = _valid_cluster()
     del cluster[missing]
     with pytest.raises(ValueError, match=missing):
-        _validate_cluster(cluster)
+        Cluster.from_dict(cluster)
 
 
-def test_validate_raises_on_length_mismatch():
+def test_from_dict_raises_on_unknown_key():
+    # Issue #43: a typo'd key fails loudly instead of being silently ignored.
+    cluster = _valid_cluster(captacity=3)
+    with pytest.raises(ValueError, match="unknown cluster key"):
+        Cluster.from_dict(cluster)
+
+
+def test_from_dict_raises_on_length_mismatch():
     cluster = _valid_cluster(exp_results_from=["/r/a"], exp_results_to=["a", "b"])
     with pytest.raises(ValueError, match="same length"):
-        _validate_cluster(cluster)
+        Cluster.from_dict(cluster)
 
 
-def test_validate_raises_on_one_sided_exp_results():
+def test_from_dict_raises_on_one_sided_exp_results():
     cluster = _valid_cluster(exp_results_from=["/r/a"])
     with pytest.raises(ValueError, match="both specified"):
-        _validate_cluster(cluster)
+        Cluster.from_dict(cluster)
 
 
 # ----- _build_job_array_string -----
@@ -346,6 +366,30 @@ def test_submitter_init_skips_git_when_repo_url_is_none(submitter_with_runner):
     runner = FakeRunner({})
     submitter_with_runner(runner)
     assert not any("git" in " ".join(c) for c in runner.calls)
+
+
+def test_submitter_does_not_mutate_caller_inputs(submitter_with_runner):
+    # Issue #42: clusters and job_list passed in must come back untouched -
+    # no exp_results/username keys added, no in-place job_list normalization.
+    clusters = [
+        {
+            "name": "cedar",
+            "capacity": 3,
+            "account": "def-sutton",
+            "project_root_dir": "/home/alice/proj",
+        }
+    ]
+    job_list = [1, (2, 3)]
+    submitter_with_runner(FakeRunner({}), clusters=clusters, job_list=job_list)
+    assert clusters == [
+        {
+            "name": "cedar",
+            "capacity": 3,
+            "account": "def-sutton",
+            "project_root_dir": "/home/alice/proj",
+        }
+    ]
+    assert job_list == [1, (2, 3)]
 
 
 def test_submitter_init_invokes_git_sync_when_repo_url_given(submitter_with_runner):
