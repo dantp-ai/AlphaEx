@@ -18,12 +18,21 @@ def _write_cfg(tmp_path, cfg_dict):
     return str(path)
 
 
+def _contains_key(obj, target):
+    """Recursively check whether `target` appears as a dict key anywhere in obj."""
+    if isinstance(obj, dict):
+        return target in obj or any(_contains_key(v, target) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_key(v, target) for v in obj)
+    return False
+
+
 def test_total_combinations_matches_fixture(sweeper):
     assert sweeper.total_combinations == 33
 
 
 def test_keys_set_contains_all_sweep_variables(sweeper):
-    assert sweeper.keys_set == {
+    assert sweeper._keys_set == {
         "algorithm",
         "param1",
         "param2",
@@ -33,6 +42,12 @@ def test_keys_set_contains_all_sweep_variables(sweeper):
         "param6",
         "simulator",
     }
+
+
+def test_config_dict_not_mutated_with_count_metadata(sweeper):
+    # Issue #39: combination counts live in class-owned state and are never
+    # written back into the user's parsed config.
+    assert not _contains_key(sweeper._config_dict, "num_combinations")
 
 
 @pytest.mark.parametrize(
@@ -197,53 +212,25 @@ def test_search_returns_empty_for_impossible_value(sweeper):
     assert sweeper.search({"param1": "DOES_NOT_EXIST"}, 1) == []
 
 
-def test_get_num_combinations_leaf_list():
-    assert Sweeper.get_num_combinations([1, 2, 3]) == 3
+# ----- _select index-to-value mapping (issue #22 guard) -----
+#
+# Scalar and dict-branch selection are covered end-to-end by the parse() tests
+# above (idx 24/28/32 exercise dict branches). What parse() never reaches is the
+# out-of-range guard, so it is pinned directly here.
 
 
-def test_get_num_combinations_with_dict_values():
-    values = [
-        {"num_combinations": 4},
-        {"num_combinations": 8},
-        "leaf",
-    ]
-    assert Sweeper.get_num_combinations(values) == 13
-
-
-def test_get_value_and_relative_idx_leaf_first():
-    value, rel = Sweeper.get_value_and_relative_idx(["a", "b", "c"], 0)
-    assert value == "a"
-    assert rel == 0
-
-
-def test_get_value_and_relative_idx_leaf_last():
-    value, rel = Sweeper.get_value_and_relative_idx(["a", "b", "c"], 2)
-    assert value == "c"
-    assert rel == 0
-
-
-def test_get_value_and_relative_idx_with_dict_value():
-    values = [
-        {"num_combinations": 3, "label": "first"},
-        {"num_combinations": 2, "label": "second"},
-    ]
-    value, rel = Sweeper.get_value_and_relative_idx(values, 3)
-    assert value["label"] == "second"
-    assert rel == 0
-
-
-def test_get_value_and_relative_idx_raises_when_idx_out_of_range():
-    # Pre-fix: the fallback returned a bare int, so callers' tuple unpack would
-    # explode with a misleading "cannot unpack non-iterable int" one frame up.
-    # Post-fix: raise IndexError at the source with a useful message (issue #22).
+def test_select_raises_when_idx_out_of_range(sweeper):
+    # Pre-fix the fallback returned a bare int, so the caller's tuple unpack
+    # exploded with a misleading "cannot unpack non-iterable int" one frame up.
+    # Post-fix raises IndexError at the source with a useful message (issue #22).
     with pytest.raises(IndexError, match="idx 99"):
-        Sweeper.get_value_and_relative_idx(["a", "b", "c"], 99)
+        sweeper._select(["a", "b", "c"], 99)
 
 
-def test_get_value_and_relative_idx_raises_at_exact_boundary():
-    # idx == len(values) is the smallest out-of-range value for a leaf list.
+def test_select_raises_at_exact_boundary(sweeper):
+    # idx == len(values) is the smallest out-of-range value for a scalar list.
     with pytest.raises(IndexError):
-        Sweeper.get_value_and_relative_idx(["a", "b", "c"], 3)
+        sweeper._select(["a", "b", "c"], 3)
 
 
 def test_minimal_single_value_sweep_runs_increment(tmp_path):
