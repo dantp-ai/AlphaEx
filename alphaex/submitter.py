@@ -6,51 +6,80 @@
 import shlex
 import subprocess
 import time
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 _REQUIRED_CLUSTER_KEYS = ("name", "capacity", "account", "project_root_dir")
 
 
-def _normalize_job_list(job_list):
-    """Convert bare ints in ``job_list`` to ``(n, n)`` tuples in place.
+@dataclass(frozen=True)
+class Cluster:
+    """Immutable description of one cluster the submitter targets.
 
-    Tuples pass through unchanged. Asserts ``job_list`` is non-empty.
-    Returns the same list, mutated.
+    Construct directly, or from a config dict via :meth:`from_dict` (which the
+    ``Submitter`` applies to any dict it is handed). Frozen so a cluster's
+    config can never be mutated by the orchestration loop; per-run state such as
+    the resolved SSH username lives in the ``Submitter``, not here (issue #42).
+
+    ``exp_results_from`` and ``exp_results_to`` are parallel sequences: once a
+    cluster drains, results at each remote path are copied to the corresponding
+    local path.
     """
-    assert len(job_list) != 0
-    for i, item in enumerate(job_list):
-        if isinstance(item, int):
-            job_list[i] = (item, item)
-    return job_list
 
+    name: str
+    capacity: int
+    account: str
+    project_root_dir: str
+    exp_results_from: tuple = ()
+    exp_results_to: tuple = ()
 
-def _validate_cluster(cluster):
-    """Validate a cluster config dict and default ``exp_results_*`` to ``[]``.
-
-    Raises ``ValueError`` on a missing required key, a length mismatch
-    between ``exp_results_from`` and ``exp_results_to``, or a partial
-    specification (only one of the two). Returns the same dict, possibly
-    mutated.
-    """
-    for key in _REQUIRED_CLUSTER_KEYS:
-        if key not in cluster:
-            raise ValueError(f"required cluster key {key!r} missing from {cluster!r}")
-
-    has_from = "exp_results_from" in cluster
-    has_to = "exp_results_to" in cluster
-    if has_from and has_to:
-        if len(cluster["exp_results_from"]) != len(cluster["exp_results_to"]):
+    def __post_init__(self):
+        if len(self.exp_results_from) != len(self.exp_results_to):
             raise ValueError(
                 "exp_results_from and exp_results_to must have the same length"
             )
-    elif has_from != has_to:
-        raise ValueError(
-            "exp_results_from and exp_results_to must be both specified or both omitted"
+
+    @classmethod
+    def from_dict(cls, cluster):
+        """Build a ``Cluster`` from a config dict without mutating it (issue #42).
+
+        Raises ``ValueError`` on an unknown key (likely a typo), a missing
+        required key, or a one-sided ``exp_results_*`` specification.
+        """
+        allowed = {f.name for f in fields(cls)}
+        unknown = set(cluster) - allowed
+        if unknown:
+            raise ValueError(f"unknown cluster key(s) {sorted(unknown)} in {cluster!r}")
+        for key in _REQUIRED_CLUSTER_KEYS:
+            if key not in cluster:
+                raise ValueError(
+                    f"required cluster key {key!r} missing from {cluster!r}"
+                )
+        has_from = "exp_results_from" in cluster
+        has_to = "exp_results_to" in cluster
+        if has_from != has_to:
+            raise ValueError(
+                "exp_results_from and exp_results_to must be both specified "
+                "or both omitted"
+            )
+        return cls(
+            name=cluster["name"],
+            capacity=cluster["capacity"],
+            account=cluster["account"],
+            project_root_dir=cluster["project_root_dir"],
+            exp_results_from=tuple(cluster.get("exp_results_from", ())),
+            exp_results_to=tuple(cluster.get("exp_results_to", ())),
         )
-    else:
-        cluster["exp_results_from"] = []
-        cluster["exp_results_to"] = []
-    return cluster
+
+
+def _normalize_job_list(job_list):
+    """Return a new job list with bare ints promoted to ``(n, n)`` tuples.
+
+    Tuples pass through unchanged. The input list is not mutated (issue #42).
+    Asserts ``job_list`` is non-empty.
+    """
+    assert len(job_list) != 0
+    return [(item, item) if isinstance(item, int) else item for item in job_list]
 
 
 def _build_job_array_string(
@@ -173,7 +202,8 @@ class Submitter:
     Create a job submitter and which will ssh to clusters and submit slurm array jobs.
 
     Args:
-        clusters (list): clusters information
+        clusters (list): ``Cluster`` instances or config dicts (each coerced
+            via ``Cluster.from_dict``) describing the target clusters
         job_list (list): list of ints / (start, end) tuples describing
             slurm array indices to submit
         script_path (str): the slurm array job submission script in the experiment
@@ -197,9 +227,8 @@ class Submitter:
             unbounded. Use this to guard against stuck clusters that never
             drain.
 
-    The clusters information is stored in a list of dictionaries.
-
-    Each dictionary must contain 4 fields:
+    Each entry is a ``Cluster`` instance, or a dict coerced via
+    ``Cluster.from_dict`` that must contain 4 fields:
 
     name (str): the name of your remote cluster, it should be defined in .ssh/config
     of the server.
@@ -237,29 +266,29 @@ class Submitter:
             sbatch_params = {}
         if export_params is None:
             export_params = {}
-        for cluster in clusters:
-            _validate_cluster(cluster)
+        self.clusters = [
+            c if isinstance(c, Cluster) else Cluster.from_dict(c) for c in clusters
+        ]
 
         if repo_url is not None:
-            for cluster in clusters:
+            for cluster in self.clusters:
                 self._run_command(
                     _build_git_sync_command(
-                        cluster["name"], cluster["project_root_dir"], repo_url
+                        cluster.name, cluster.project_root_dir, repo_url
                     ),
                     check=True,
                 )
 
-        for cluster in clusters:
+        for cluster in self.clusters:
             for remote_path, local_path in zip(
-                cluster["exp_results_from"], cluster["exp_results_to"]
+                cluster.exp_results_from, cluster.exp_results_to
             ):
                 self._run_command(
-                    ["ssh", cluster["name"], f"mkdir -p {shlex.quote(remote_path)}"],
+                    ["ssh", cluster.name, f"mkdir -p {shlex.quote(remote_path)}"],
                     check=True,
                 )
                 self._run_command(["mkdir", "-p", local_path], check=True)
 
-        self.clusters = clusters.copy()
         self.script_path = script_path
         self.duration_between_two_polls = duration_between_two_polls
         self.export_params = export_params
@@ -322,9 +351,10 @@ class Submitter:
         print(f"submit job array {job_array_string} to {cluster_name}.")
 
     def submit(self):
+        usernames = {}
         for cluster in self.clusters:
-            output = self._run_command(["ssh", cluster["name"], "whoami"], check=True)
-            cluster["username"] = output.split("\n")[0]
+            output = self._run_command(["ssh", cluster.name, "whoami"], check=True)
+            usernames[cluster.name] = output.split("\n")[0]
 
         finish_submitting = False
         temp_clusters = self.clusters.copy()
@@ -333,21 +363,21 @@ class Submitter:
         while True:
             for cluster in temp_clusters[:]:
                 output = self._run_command(
-                    _build_squeue_command(cluster["name"], cluster["username"]),
+                    _build_squeue_command(cluster.name, usernames[cluster.name]),
                     check=True,
                 )
                 num_current_jobs = _count_active_jobs(output, script_basename)
-                print(f"cluster {cluster['name']} has {num_current_jobs} jobs")
+                print(f"cluster {cluster.name} has {num_current_jobs} jobs")
 
                 if finish_submitting:
                     if num_current_jobs == 0:
                         for remote_path, local_path in zip(
-                            cluster["exp_results_from"], cluster["exp_results_to"]
+                            cluster.exp_results_from, cluster.exp_results_to
                         ):
                             Path(local_path).mkdir(parents=True, exist_ok=True)
                             self._run_command(
                                 _build_scp_command(
-                                    cluster["name"], remote_path, local_path
+                                    cluster.name, remote_path, local_path
                                 ),
                                 check=True,
                             )
@@ -355,13 +385,13 @@ class Submitter:
                     if len(temp_clusters) == 0:
                         print("Finish all experimental results copying.\nDone\n")
                         return
-                elif num_current_jobs < cluster["capacity"]:
+                elif num_current_jobs < cluster.capacity:
                     array_string, new_idx, new_num, just_finished = (
                         _build_job_array_string(
                             self.job_list,
                             self.starting_job_list_index,
                             self.starting_job_num,
-                            cluster["capacity"],
+                            cluster.capacity,
                             num_current_jobs,
                         )
                     )
@@ -374,9 +404,9 @@ class Submitter:
                         print("Finish submitting all jobs")
                     self.submit_jobs(
                         array_string,
-                        cluster["name"],
-                        cluster["account"],
-                        cluster["project_root_dir"],
+                        cluster.name,
+                        cluster.account,
+                        cluster.project_root_dir,
                     )
 
             polls += 1
